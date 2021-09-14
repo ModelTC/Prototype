@@ -22,7 +22,7 @@ from prototype.prototype.lr_scheduler import scheduler_entry
 from prototype.prototype.data import build_imagenet_train_dataloader, build_imagenet_test_dataloader
 from prototype.prototype.data import build_custom_dataloader
 from prototype.prototype.loss_functions import LabelSmoothCELoss
-from prototype.prototype.model import get_model_robust_baseline, get_model_robust_trick
+from prototype.prototype.model import get_model_robust_dcit
 import traceback
 import shutil
 #from prototype.prototype.utils.user_analysis_helper import send_info
@@ -30,14 +30,20 @@ import shutil
 #from prototype.spring.models import SPRING_MODELS_REGISTRY
 
 
-class MultiEvalSolver(BaseSolver):
+class MultiEvalSolver_C(BaseSolver):
 
-    def __init__(self, config, model, prefix_name):
+    def __init__(self, config, model=None, prefix_name=None):
         self.prototype_info = EasyDict()
-        self.prefix_name = prefix_name
+        if prefix_name is not None:
+            self.prefix_name = prefix_name
+        else:
+            self.prefix_name = self.config.model.type
+        if model is not None:
+            self.model = model
+            self.model.cuda()
+        else:
+            self.build_model()
         self.config = config
-        self.model = model
-        self.model.cuda()
         self.setup_env()
         # self.build_model()
         # self.build_optimizer()
@@ -404,60 +410,46 @@ def main():
     model_dict = get_model_robust_baseline()
     model_dict_2 = get_model_robust_trick()
 
-    status= open("status.txt", "w")
+    status = open("status.txt", "w")
 
-    for model_name, model in model_dict.items():
-        file_path = args.ckpt_filePath
-        ckpt_path = os.path.join(file_path, model_name + '.pth.tar')
-        try:
-            print('Loading pretrain model for ' + model_name)
-            state = torch.load(ckpt_path, 'cpu')
-            # state = modify_state(state, EasyDict())
-            for key in list(state['model'].keys()):
-                if 'module.' in key:
-                    state['model'][key.split('module.')[1]] = state['model'].pop(key)
-            load_state_model(model, state['model'])
-        except:
-            print("Error when load " + model_name)
-            print(traceback.format_exc())
-            status.write(f"Error when load {model_name}, skip it.\n")
-            status.write(traceback.format_exc())
-            continue
-        solver = MultiEvalSolver(config, model, model_name)
+    if hasattr(config, 'eval_list'):
+        test_name_list = config['eval_list']
+        model_dict = get_model_robust_dcit()
+        for model_name in test_name_list:
+            file_path = args.ckpt_filePath
+            ckpt_path = os.path.join(file_path, model_name + '.pth.tar')
+            try:
+                model = model_dict[model_name]
+                print('Loading pretrain model for ' + model_name)
+                state = torch.load(ckpt_path, 'cpu')
+                # state = modify_state(state, EasyDict())
+                for key in list(state['model'].keys()):
+                    if 'module.' in key:
+                        state['model'][key.split('module.')[1]] = state['model'].pop(key)
+                load_state_model(model, state['model'])
+            except:
+                print("Error when load " + model_name)
+                print(traceback.format_exc())
+                status.write(f"Error when load {model_name}, skip it.\n")
+                status.write(traceback.format_exc())
+                continue
+
+            solver = MultiEvalSolver_C(config, model, model_name)
+            # evaluate or train
+            solver.evaluate()
+            status.write(f"{model_name} done\n")
+            # remove detail file to free disk
+            if not args.save_detail:
+                shutil.rmtree(solver.path.result_path, ignore_errors=True)
+    else:
+        solver = MultiEvalSolver_C(config)
+        model_name = solver.prefix_name
         # evaluate or train
         solver.evaluate()
         status.write(f"{model_name} done\n")
 
-        # remove detail file to free disk
-        if not args.save_detail:
-            shutil.rmtree(solver.path.result_path, ignore_errors=True)
+    status.close()
 
-    for model_name, model in model_dict_2.items():
-        file_path = '/mnt/lustrenew2/share_data/robust/ckpt_weight'
-        ckpt_path = os.path.join(file_path, model_name + '.pth.tar')
-        try:
-            print('Loading pretrain model for ' + model_name)
-            state = torch.load(ckpt_path, 'cpu')
-            # state = modify_state(state, EasyDict())
-            for key in list(state['model'].keys()):
-                if 'module.' in key:
-                    state['model'][key.split('module.')[1]] = state['model'].pop(key)
-            load_state_model(model, state['model'])
-        except:
-            print("Error when load " + model_name)
-            print(traceback.format_exc())
-            status.write(f"Error when load {model_name}, skip it.\n")
-            status.write(traceback.format_exc())
-            continue
-
-        solver = MultiEvalSolver(config, model, model_name)
-        # evaluate or train
-        solver.evaluate()
-        status.write(f"{model_name} done\n")
-
-        # remove detail file to free disk
-        if not args.save_detail:
-            shutil.rmtree(solver.path.result_path, ignore_errors=True)
 
     status.close()
 

@@ -47,8 +47,13 @@ def ffmpeg_loader(img_bytes, filepath):
     )
     return img
 
+
 def build_image_reader(reader_type):
     if reader_type == 'pil':
         return pil_loader
+    elif reader_type == 'opencv':
+        return opencv_loader
+    elif reader_type == 'ffmpeg':
+        return ffmpeg_loader
     else:
         raise NotImplementedError

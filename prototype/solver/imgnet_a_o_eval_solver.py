@@ -22,7 +22,7 @@ from prototype.prototype.lr_scheduler import scheduler_entry
 from prototype.prototype.data import build_imagenet_train_dataloader, build_imagenet_test_dataloader
 from prototype.prototype.data import build_custom_dataloader
 from prototype.prototype.loss_functions import LabelSmoothCELoss
-from prototype.prototype.model import get_model_robust_baseline, get_model_robust_trick
+from prototype.prototype.model import get_model_robust_dcit
 import traceback
 import shutil
 import prototype.prototype.data.utils.calibration_tools as calibration_tools
@@ -35,10 +35,19 @@ import numpy as np
 
 class MultiEvalSolver_A_O(BaseSolver):
 
-    def __init__(self, config, model, prefix_name):
+    def __init__(self, config, model=None, prefix_name=None):
         self.prototype_info = EasyDict()
-        self.prefix_name = prefix_name
         self.config = config
+        if prefix_name is not None:
+            self.prefix_name = prefix_name
+        else:
+            self.prefix_name = self.config.model.type
+        if model is not None:
+            self.model = model
+            self.model.cuda()
+        else:
+            self.build_model()
+
         # for imagenet - A & O
         self.create_symlinks_to_imagenet(self.config.data.test.imagenet_o_folder, self.config.data.test.imagenet_o_root_dir)
         all_wnids = ['n01440764', 'n01443537', 'n01484850', 'n01491361', 'n01494475', 'n01496331', 'n01498041',
@@ -184,7 +193,6 @@ class MultiEvalSolver_A_O(BaseSolver):
                      'n09472597', 'n09835506', 'n10148035', 'n10565667', 'n11879895', 'n11939491', 'n12057211',
                      'n12144580', 'n12267677', 'n12620546', 'n12768682', 'n12985857', 'n12998815', 'n13037406',
                      'n13040303', 'n13044778', 'n13052670', 'n13054560', 'n13133613', 'n15075141']
-
         imagenet_a_wnids = ['n01498041', 'n01531178', 'n01534433', 'n01558993', 'n01580077', 'n01614925', 'n01616318',
                             'n01631663', 'n01641577', 'n01669191', 'n01677366', 'n01687978', 'n01694178', 'n01698640',
                             'n01735189', 'n01770081', 'n01770393', 'n01774750', 'n01784675', 'n01819313', 'n01820546',
@@ -214,9 +222,7 @@ class MultiEvalSolver_A_O(BaseSolver):
                             'n07697537', 'n07714990', 'n07718472', 'n07720875', 'n07734744', 'n07749582', 'n07753592',
                             'n07760859', 'n07768694', 'n07831146', 'n09229709', 'n09246464', 'n09472597', 'n09835506',
                             'n11879895', 'n12057211', 'n12144580', 'n12267677']
-
         self.imagenet_a_mask = [wnid in set(imagenet_a_wnids) for wnid in all_wnids]
-
         imagenet_o_wnids = ['n01443537', 'n01704323', 'n01770081', 'n01784675', 'n01819313', 'n01820546', 'n01910747',
                             'n01917289', 'n01968897', 'n02074367', 'n02317335', 'n02319095', 'n02395406', 'n02454379',
                             'n02606052', 'n02655020', 'n02666196', 'n02672831', 'n02730930', 'n02777292', 'n02783161',
@@ -246,11 +252,8 @@ class MultiEvalSolver_A_O(BaseSolver):
                             'n07720875', 'n07742313', 'n07745940', 'n07747607', 'n07749582', 'n07753275', 'n07753592',
                             'n07754684', 'n07768694', 'n07836838', 'n07871810', 'n07873807', 'n07880968', 'n09229709',
                             'n09472597', 'n12144580', 'n12267677', 'n13052670']
-
         self.imagenet_o_mask = [wnid in set(imagenet_o_wnids) for wnid in all_wnids]
 
-        self.model = model
-        self.model.cuda()
         self.setup_env()
         # self.build_model()
         # self.build_optimizer()
@@ -260,6 +263,7 @@ class MultiEvalSolver_A_O(BaseSolver):
         count_params(self.model)
         count_flops(self.model, input_shape=[
             1, 3, self.config.data.input_size, self.config.data.input_size])
+
 
     def setup_env(self):
         # dist
@@ -460,52 +464,43 @@ def main():
     args = parser.parse_args()
     # build solver
     config = parse_config(args.config)
+    status = open("status.txt", "w")
 
     if hasattr(config, 'eval_list'):
         test_name_list = config['eval_list']
+        model_dict = get_model_robust_dcit()
+        for model_name in test_name_list:
+            file_path = args.ckpt_filePath
+            ckpt_path = os.path.join(file_path, model_name + '.pth.tar')
+            try:
+                model = model_dict[model_name]
+                print('Loading pretrain model for ' + model_name)
+                state = torch.load(ckpt_path, 'cpu')
+                # state = modify_state(state, EasyDict())
+                for key in list(state['model'].keys()):
+                    if 'module.' in key:
+                        state['model'][key.split('module.')[1]] = state['model'].pop(key)
+                load_state_model(model, state['model'])
+            except:
+                print("Error when load " + model_name)
+                print(traceback.format_exc())
+                status.write(f"Error when load {model_name}, skip it.\n")
+                status.write(traceback.format_exc())
+                continue
+
+            solver = MultiEvalSolver_A_O(config, model, model_name)
+            # evaluate or train
+            solver.evaluate()
+            status.write(f"{model_name} done\n")
+            # remove detail file to free disk
+            if not args.save_detail:
+                shutil.rmtree(solver.path.result_path, ignore_errors=True)
     else:
-        test_name_list = []
-
-    model_dict = get_model_robust_baseline()
-    model_trick_dict = get_model_robust_trick()
-    model_dict.update(model_trick_dict)
-
-    status = open("status.txt", "w")
-
-    test_name_list = list(model_trick_dict.keys())
-    test_name_list += ['regnetx_6400m', 'shufflenet_v2_x1_5', 'efficientnet_b0', 'efficientnet_b1', 'efficientnet_b2'
-                       'efficientnet_b3', 'efficientnet_b4', 'efficientnet_b5', 'efficientnet_b6', 'efficientnet_b7']
-
-
-    for model_name, model in model_dict.items():
-        if model_name not in test_name_list and test_name_list != []:
-            continue
-        file_path = args.ckpt_filePath
-        ckpt_path = os.path.join(file_path, model_name + '.pth.tar')
-        try:
-            print('Loading pretrain model for ' + model_name)
-            state = torch.load(ckpt_path, 'cpu')
-            # state = modify_state(state, EasyDict())
-            for key in list(state['model'].keys()):
-                if 'module.' in key:
-                    state['model'][key.split('module.')[1]] = state['model'].pop(key)
-            load_state_model(model, state['model'])
-        except:
-            print("Error when load " + model_name)
-            print(traceback.format_exc())
-            status.write(f"Error when load {model_name}, skip it.\n")
-            status.write(traceback.format_exc())
-            continue
-
-
-        solver = MultiEvalSolver_A_O(config, model, model_name)
+        solver = MultiEvalSolver_A_O(config)
+        model_name = solver.prefix_name
         # evaluate or train
         solver.evaluate()
         status.write(f"{model_name} done\n")
-
-        # remove detail file to free disk
-        if not args.save_detail:
-            shutil.rmtree(solver.path.result_path, ignore_errors=True)
 
     status.close()
 

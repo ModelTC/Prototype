@@ -22,7 +22,7 @@ from prototype.prototype.lr_scheduler import scheduler_entry
 from prototype.prototype.data import build_imagenet_train_dataloader, build_imagenet_test_dataloader
 from prototype.prototype.data import build_custom_dataloader
 from prototype.prototype.loss_functions import LabelSmoothCELoss
-from prototype.prototype.model import get_model_robust_baseline, get_model_robust_trick, get_efficient
+from prototype.prototype.model import get_model_robust_dcit
 import traceback
 import shutil
 import numpy as np
@@ -32,14 +32,20 @@ import copy
 #from prototype.spring.models import SPRING_MODELS_REGISTRY
 
 
-class IPEvalSolver(BaseSolver):
+class MultiEvalSolver_P(BaseSolver):
 
-    def __init__(self, config, model, prefix_name):
+    def __init__(self, config, model=None, prefix_name=None):
         self.prototype_info = EasyDict()
-        self.prefix_name = prefix_name
+        if prefix_name is not None:
+            self.prefix_name = prefix_name
+        else:
+            self.prefix_name = self.config.model.type
+        if model is not None:
+            self.model = model
+            self.model.cuda()
+        else:
+            self.build_model()
         self.config = config
-        self.model = model
-        # self.model.cuda()
         self.setup_env()
         self.check_rank()
         # self.build_model()
@@ -412,46 +418,53 @@ def main():
     status = open("status.txt", "a")
 
 
-    for model_name, model in model_dict.items():
-        file_path = args.ckpt_filePath
-        ckpt_path = os.path.join(file_path, model_name + '.pth.tar')
-        try:
-            print('Loading pretrain model for ' + model_name)
-            state = torch.load(ckpt_path, 'cpu')
-            # state = modify_state(state, EasyDict())
-            # for key in list(state['model'].keys()):
-            #     if 'module.' in key:
-            #         state['model'][key.split('module.')[1]] = state['model'].pop(key)
-            model.cuda()
-            model = DistModule(model, False)
-            load_state_model(model, state['model'])
-        except:
-            print("Error when load " + model_name)
-            print(traceback.format_exc())
-            status.write(f"Error when load {model_name}, skip it.\n")
-            status.write(traceback.format_exc())
-            continue
+    if hasattr(config, 'eval_list'):
+        test_name_list = config['eval_list']
+        model_dict = get_model_robust_dcit()
+        for model_name in test_name_list:
+            file_path = args.ckpt_filePath
+            ckpt_path = os.path.join(file_path, model_name + '.pth.tar')
+            try:
+                model = model_dict[model_name]
+                print('Loading pretrain model for ' + model_name)
+                state = torch.load(ckpt_path, 'cpu')
+                # state = modify_state(state, EasyDict())
+                for key in list(state['model'].keys()):
+                    if 'module.' in key:
+                        state['model'][key.split('module.')[1]] = state['model'].pop(key)
+                load_state_model(model, state['model'])
+            except:
+                print("Error when load " + model_name)
+                print(traceback.format_exc())
+                status.write(f"Error when load {model_name}, skip it.\n")
+                status.write(traceback.format_exc())
+                continue
 
-        if 'efficientnet' in model_name:
-            if model_name.split('_')[-1].isdigit():
-                input_size = int(model_name.split('_')[-1])
-                test_size = int(input_size*256/224)
-                config.data.input_size = input_size
-                config.data.test_resize = test_size
-        else:
-            config.data.input_size = 224
-            config.data.test_resize = 256
-
-        solver = IPEvalSolver(copy.deepcopy(config), model, model_name)
+            solver = MultiEvalSolver_P(config, model, model_name)
+            # evaluate or train
+            solver.evaluate()
+            status.write(f"{model_name} done\n")
+            # remove detail file to free disk
+            if not args.save_detail:
+                shutil.rmtree(solver.path.result_path, ignore_errors=True)
+    else:
+        solver = MultiEvalSolver_P(config)
+        model_name = solver.prefix_name
         # evaluate or train
         solver.evaluate()
         status.write(f"{model_name} done\n")
-
-        # remove detail file to free disk
-        if not args.save_detail:
-            shutil.rmtree(solver.path.result_path, ignore_errors=True)
 
     status.close()
 
 if __name__ == '__main__':
     main()
+
+# if 'efficientnet' in model_name:
+#     if model_name.split('_')[-1].isdigit():
+#         input_size = int(model_name.split('_')[-1])
+#         test_size = int(input_size * 256 / 224)
+#         config.data.input_size = input_size
+#         config.data.test_resize = test_size
+# else:
+#     config.data.input_size = 224
+#     config.data.test_resize = 256
