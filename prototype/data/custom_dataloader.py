@@ -1,6 +1,6 @@
 from torch.utils.data import DataLoader
 
-from .datasets import CustomDataset, MultiClassDataset
+from .datasets import CustomDataset
 from .transforms import build_transformer
 from .sampler import build_sampler
 from .metrics import build_evaluator
@@ -25,7 +25,7 @@ def build_custom_dataloader(data_type, cfg_dataset):
     if cfg_dataset['type'] == 'custom':
         CurrDataset = CustomDataset
     elif cfg_dataset['type'] == 'multiclass':
-        CurrDataset = MultiClassDataset
+        raise NotImplementedError
     else:
         raise NotImplementedError
 
