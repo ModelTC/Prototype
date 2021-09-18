@@ -27,7 +27,7 @@ from .resnet_official import (  # noqa: F401
 from .mobilenet_v3 import mobilenet_v3  # noqa: F401
 
 from .vision_transformer import (  # noqa: F401
-    vit_b32_224, vit_b16_224, hybird_vit_res50_b16_224,
+    vit_b32_224, vit_b16_224,
     deit_tiny_b16_224, deit_small_b16_224, deit_base_b16_224
 )
 
