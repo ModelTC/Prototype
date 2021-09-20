@@ -5,6 +5,7 @@ import os
 # Import from third library
 import torch
 import torch.distributed as dist
+import functools
 
 logger = logging.getLogger('global')
 # This file should never dependent on pod
@@ -14,6 +15,8 @@ allgather = dist.all_gather
 broadcast = dist.broadcast
 synchronize = torch.cuda.synchronize
 init_process_group = dist.init_process_group
+allreduce_async = functools.partial(dist.all_reduce, async_op=True)
+
 
 
 def get_rank():

@@ -70,7 +70,7 @@ class DistModule(torch.nn.Module):
 
     def _make_hook(self, name, p, i):
         def hook(*ignore):
-            link.allreduce_async(name, p.grad.data)
+            link.allreduce_async(p.grad.data)
         return hook
 
     def sync_gradients(self):
