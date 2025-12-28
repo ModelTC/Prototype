@@ -12,7 +12,11 @@ import os
 
 
 def clip_vit_l_14(
-    pretrained="openai", num_classes=1000, checkpoint_path=None, **kwargs
+    pretrained="openai",
+    num_classes=1000,
+    checkpoint_path=None,
+    use_pretrain_path=False,
+    **kwargs,
 ):
     """
     CLIP ViT-L/14 model.
@@ -27,8 +31,27 @@ def clip_vit_l_14(
         checkpoint_path (str): Optional path to checkpoint file. If provided and file exists,
             will load visual encoder weights from checkpoint. This is useful for loading
             fare_eps_2.pt, tecoa_eps_2.pt, etc. that only contain visual encoder weights.
+        use_pretrain_path (bool): If True, use saver.pretrain.path from config to load checkpoint.
+            Default: False (automatically download from HuggingFace).
         **kwargs: Additional arguments passed to open_clip.create_model_and_transforms
     """
+    # Check if we should use pretrain path from config
+    if use_pretrain_path:
+        full_config = kwargs.pop("_full_config", None)
+        if full_config is not None:
+            try:
+                # Try to access saver.pretrain.path from full_config
+                if (
+                    hasattr(full_config, "saver")
+                    and hasattr(full_config.saver, "pretrain")
+                    and hasattr(full_config.saver.pretrain, "path")
+                ):
+                    pretrain_path = full_config.saver.pretrain.path
+                    if pretrain_path and os.path.exists(pretrain_path):
+                        checkpoint_path = pretrain_path
+            except (AttributeError, KeyError):
+                pass
+
     try:
         import open_clip
     except ImportError:
@@ -37,7 +60,14 @@ def clip_vit_l_14(
         )
 
     # Create CLIP model
-    if pretrained == "fare2-clip":
+    # If use_pretrain_path is True, always create base OpenAI model and load from checkpoint
+    if use_pretrain_path and checkpoint_path and os.path.exists(checkpoint_path):
+        # Create base OpenAI CLIP model, then load weights from checkpoint
+        model, _, _ = open_clip.create_model_and_transforms(
+            "ViT-L-14", pretrained="openai", device="cpu"
+        )
+        vision_model = model.visual
+    elif pretrained == "fare2-clip":
         # Load FARE2 model from HuggingFace
         model, _, _ = open_clip.create_model_and_transforms(
             "hf-hub:chs20/fare2-clip", device="cpu"
@@ -45,18 +75,10 @@ def clip_vit_l_14(
         vision_model = model.visual
     elif pretrained == "tecoa2-clip":
         # Load TeCoA2 model from HuggingFace
-        # Note: If HuggingFace model doesn't exist, you can load from checkpoint using pretrain.path in config
-        try:
-            model, _, _ = open_clip.create_model_and_transforms(
-                "hf-hub:chs20/tecoa2-clip", device="cpu"
-            )
-            vision_model = model.visual
-        except Exception:
-            # Fallback: create OpenAI model, checkpoint will be loaded via pretrain.path in config
-            model, _, _ = open_clip.create_model_and_transforms(
-                "ViT-L-14", pretrained="openai", device="cpu"
-            )
-            vision_model = model.visual
+        model, _, _ = open_clip.create_model_and_transforms(
+            "hf-hub:chs20/tecoa2-clip", device="cpu"
+        )
+        vision_model = model.visual
     else:
         # Create standard OpenAI CLIP model
         model, _, _ = open_clip.create_model_and_transforms(
@@ -64,33 +86,31 @@ def clip_vit_l_14(
         )
         vision_model = model.visual
 
-        # If checkpoint_path is provided and exists, load visual encoder weights
-        if checkpoint_path and os.path.exists(checkpoint_path):
-            checkpoint = torch.load(checkpoint_path, map_location="cpu")
-            # Handle different checkpoint formats
-            if isinstance(checkpoint, dict):
-                # If checkpoint has 'model' key, use that
-                if "model" in checkpoint:
-                    state_dict = checkpoint["model"]
-                # If checkpoint has 'visual' key, use that
-                elif "visual" in checkpoint:
-                    state_dict = checkpoint["visual"]
-                # Otherwise, assume the checkpoint is the state dict itself
-                else:
-                    state_dict = checkpoint
+    # If checkpoint_path is provided and exists, load visual encoder weights
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        # Handle different checkpoint formats
+        if isinstance(checkpoint, dict):
+            # If checkpoint has 'model' key, use that
+            if "model" in checkpoint:
+                state_dict = checkpoint["model"]
+            # If checkpoint has 'visual' key, use that
+            elif "visual" in checkpoint:
+                state_dict = checkpoint["visual"]
+            # Otherwise, assume the checkpoint is the state dict itself
             else:
                 state_dict = checkpoint
+        else:
+            state_dict = checkpoint
 
-            # Remove 'module.' prefix if present
-            new_state_dict = {}
-            for key, value in state_dict.items():
-                new_key = (
-                    key.replace("module.", "") if key.startswith("module.") else key
-                )
-                new_state_dict[new_key] = value
+        # Remove 'module.' prefix if present
+        new_state_dict = {}
+        for key, value in state_dict.items():
+            new_key = key.replace("module.", "") if key.startswith("module.") else key
+            new_state_dict[new_key] = value
 
-            # Load into vision model
-            vision_model.load_state_dict(new_state_dict, strict=False)
+        # Load into vision model
+        vision_model.load_state_dict(new_state_dict, strict=False)
 
     # Add classification head if needed
     if num_classes != 0:

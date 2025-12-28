@@ -126,6 +126,24 @@ from .vit_timm import vit_small, vit_base, vit_small_cvst, vit_base_cvst  # noqa
 from .clip_vit_l_14 import clip_vit_l_14  # noqa: F401
 
 
+def clip_vit_l_14_fare2_clip(**kwargs):
+    """CLIP ViT-L/14 with FARE2 pretrained weights."""
+    # If use_pretrain_path is True, don't override pretrained (will load from checkpoint)
+    # Otherwise, force pretrained to fare2-clip for this model type
+    if not kwargs.get("use_pretrain_path", False):
+        kwargs["pretrained"] = "fare2-clip"
+    return clip_vit_l_14(**kwargs)
+
+
+def clip_vit_l_14_tecoa2_clip(**kwargs):
+    """CLIP ViT-L/14 with TeCoA2 pretrained weights."""
+    # If use_pretrain_path is True, don't override pretrained (will load from checkpoint)
+    # Otherwise, force pretrained to tecoa2-clip for this model type
+    if not kwargs.get("use_pretrain_path", False):
+        kwargs["pretrained"] = "tecoa2-clip"
+    return clip_vit_l_14(**kwargs)
+
+
 def get_model_robust_dcit():
     return {
         "alexnet": alexnet(),
@@ -271,7 +289,14 @@ def get_model_robust_dcit():
     }
 
 
-def model_entry(config):
+def model_entry(config, full_config=None):
+    """
+    Entry point for model creation.
+
+    Args:
+        config: Model configuration dict with 'type' and 'kwargs'
+        full_config: Optional full configuration object that may contain saver.pretrain.path
+    """
     if config["type"] not in globals():
         if config["type"].startswith("spring_"):
             try:
@@ -282,7 +307,26 @@ def model_entry(config):
             config["type"] = model_name
             return SPRING_MODELS_REGISTRY.build(config)
 
-    return globals()[config["type"]](**config["kwargs"])
+    # For clip models that support use_pretrain_path, pass full_config if available
+    # Create a copy of kwargs to avoid modifying the original config
+    if isinstance(config["kwargs"], dict):
+        kwargs = dict(config["kwargs"])  # Create a shallow copy
+    else:
+        # For EasyDict or other types, try to convert to dict or use as-is
+        try:
+            kwargs = dict(config["kwargs"])
+        except (TypeError, ValueError):
+            kwargs = config["kwargs"]
+
+    if config["type"] in [
+        "clip_vit_l_14",
+        "clip_vit_l_14_fare2_clip",
+        "clip_vit_l_14_tecoa2_clip",
+    ]:
+        if full_config is not None:
+            kwargs["_full_config"] = full_config
+
+    return globals()[config["type"]](**kwargs)
 
 
 get_model = model_entry

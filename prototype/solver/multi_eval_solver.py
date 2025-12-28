@@ -113,7 +113,7 @@ class MultiEvalSolver(BaseSolver):
                     )
                 )
 
-        self.model = model_entry(self.config.model)
+        self.model = model_entry(self.config.model, full_config=self.config)
         self.prototype_info.model = self.config.model.type
         self.model.cuda()
 
@@ -526,12 +526,10 @@ def main():
     status = open("status.txt", "w")
 
     # Use model_entry to build model from config, similar to imgnet_c_solver.py
-    if hasattr(config, "xmodel"):
-        model_config = config.xmodel
-    elif hasattr(config, "model"):
+    if hasattr(config, "model"):
         model_config = config.model
     else:
-        raise ValueError("Config must have either 'xmodel' or 'model' field")
+        raise ValueError("Config must have 'model' field")
 
     if SPRING_MODELS_REGISTRY is not None and hasattr(config, "eval_list"):
         # If eval_list exists and SPRING_MODELS_REGISTRY is available, use it
@@ -548,7 +546,7 @@ def main():
         solver = MultiEvalSolver(config, model, model_name)
     else:
         # Use model_entry to build model from config (similar to imgnet_c_solver.py)
-        model = model_entry(model_config)
+        model = model_entry(model_config, full_config=config)
         model_name = model_config.type
         solver = MultiEvalSolver(config, model, model_name)
 
