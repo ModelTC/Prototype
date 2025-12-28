@@ -86,7 +86,7 @@ class ImageNetTrainPipeV2(CustomPipeline):
 class ImageNetValPipeV2(CustomPipeline):
     def __init__(self, data_root, data_list, sampler, crop, size):
         super(ImageNetValPipeV2, self).__init__()
-
+        import ipdb; ipdb.set_trace()
         self.mc_input = ops.McReader(file_root=data_root,
                                      file_list=data_list,
                                      sampler_index=list(sampler))

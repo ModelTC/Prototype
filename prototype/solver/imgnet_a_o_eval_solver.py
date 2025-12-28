@@ -459,7 +459,7 @@ def main():
     parser.add_argument('--config', required=True, type=str)
     parser.add_argument('--evaluate', action='store_true')
     parser.add_argument('--save-detail', action='store_true')   # will use over 100G disk pre model
-    parser.add_argument('--ckpt-filePath', default='/mnt/lustre/share/robust/ckpt_baseline')
+    parser.add_argument('--ckpt-filePath', default='/data/RobustART/models/')
 
     args = parser.parse_args()
     # build solver

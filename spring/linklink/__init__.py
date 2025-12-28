@@ -41,9 +41,9 @@ def get_local_rank():
 
 def initialize(backend='nccl'):
     port = "13333"
-    proc_id = int(os.environ['SLURM_PROCID'])
-    ntasks = int(os.environ['SLURM_NTASKS'])
-    node_list = os.environ['SLURM_NODELIST']
+    proc_id = int(os.environ.get('SLURM_PROCID', 0))
+    ntasks = int(os.environ.get('SLURM_NTASKS', 0))
+    node_list = "" # os.environ['SLURM_NODELIST']
     if '[' in node_list:
         beg = node_list.find('[')
         pos1 = node_list.find('-', beg)
@@ -54,10 +54,10 @@ def initialize(backend='nccl'):
             pos2 = 1000
         node_list = node_list[:min(pos1, pos2)].replace('[', '')
     addr = node_list[8:].replace('-', '.')
-    os.environ['MASTER_PORT'] = port
-    os.environ['MASTER_ADDR'] = addr
-    os.environ['WORLD_SIZE'] = str(ntasks)
-    os.environ['RANK'] = str(proc_id)
+    # os.environ['MASTER_PORT'] = port
+    # os.environ['MASTER_ADDR'] = addr
+    # os.environ['WORLD_SIZE'] = str(ntasks)
+    # os.environ['RANK'] = str(proc_id)
     if backend == 'nccl':
         dist.init_process_group(backend='nccl')
     else:

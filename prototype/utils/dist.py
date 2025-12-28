@@ -15,7 +15,7 @@ def link_dist(func):
     return wrapper
 
 
-def dist_init(method='slurm', device_id=0):
+def dist_init(method='single_node', device_id=0):
     if method == 'slurm':
         proc_id = int(os.environ['SLURM_PROCID'])
         # ntasks = int(os.environ['SLURM_NTASKS'])
