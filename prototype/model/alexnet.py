@@ -3,11 +3,11 @@ import torch.nn as nn
 from typing import Any
 
 
-__all__ = ['alexnet']
+__all__ = ["alexnet"]
 
 
 model_urls = {
-    'alexnet': 'https://download.pytorch.org/models/alexnet-owt-7be5be79.pth',
+    "alexnet": "https://download.pytorch.org/models/alexnet-owt-7be5be79.pth",
 }
 
 

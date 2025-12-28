@@ -4,10 +4,11 @@ import torch
 import prototype.spring.linklink as link
 from collections import defaultdict
 import numpy as np
+
 try:
     from sklearn.metrics import precision_score, recall_score, f1_score
 except ImportError:
-    print('Import metrics failed!')
+    print("Import metrics failed!")
 
 from .dist import simple_group_split
 import yaml
@@ -50,7 +51,7 @@ class AverageMeter(object):
             self.avg = np.mean(self.history)
         else:
             self.val = val
-            self.sum += val*num
+            self.sum += val * num
             self.count += num
             self.avg = self.sum / self.count
 
@@ -79,7 +80,8 @@ def create_logger(log_file, level=logging.INFO):
     if _logger is None:
         _logger = logging.getLogger()
         formatter = logging.Formatter(
-            '[%(asctime)s][%(filename)15s][line:%(lineno)4d][%(levelname)8s] %(message)s')
+            "[%(asctime)s][%(filename)15s][line:%(lineno)4d][%(levelname)8s] %(message)s"
+        )
         fh = logging.FileHandler(log_file)
         fh.setFormatter(formatter)
         sh = logging.StreamHandler()
@@ -109,7 +111,7 @@ def get_logger(name, level=logging.INFO):
 
 
 def get_bn(config):
-    if getattr(config,'use_sync_bn', False):
+    if getattr(config, "use_sync_bn", False):
         group_size = config.kwargs.group_size
         var_mode = config.kwargs.var_mode
         if group_size == 1:
@@ -117,29 +119,36 @@ def get_bn(config):
         else:
             world_size, rank = link.get_world_size(), link.get_rank()
             assert world_size % group_size == 0
-            bn_group = simple_group_split(
-                world_size, rank, world_size // group_size)
+            bn_group = simple_group_split(world_size, rank, world_size // group_size)
 
-        del config.kwargs['group_size']
+        del config.kwargs["group_size"]
         config.kwargs.group = bn_group
         config.kwargs.var_mode = (
-            link.syncbnVarMode_t.L1 if var_mode == 'L1' else link.syncbnVarMode_t.L2)
+            link.syncbnVarMode_t.L1 if var_mode == "L1" else link.syncbnVarMode_t.L2
+        )
 
         def BNFunc(*args, **kwargs):
             return link.nn.SyncBatchNorm2d(*args, **kwargs, **config.kwargs)
 
         return BNFunc
     else:
+
         def BNFunc(*args, **kwargs):
-            return torch.nn.BatchNorm2d(*args, **kwargs, **getattr(config, 'kwargs', {}))
+            return torch.nn.BatchNorm2d(
+                *args, **kwargs, **getattr(config, "kwargs", {})
+            )
+
         return BNFunc
 
 
 def get_norm_layer(config):
-    if config.type == 'GroupNorm':
+    if config.type == "GroupNorm":
+
         def NormLayer(num_channels, *args, **kwargs):
             return torch.nn.GroupNorm(
-                num_channels=num_channels, *args, **kwargs, **config.kwargs)
+                num_channels=num_channels, *args, **kwargs, **config.kwargs
+            )
+
     else:
         assert False
     return NormLayer
@@ -166,8 +175,11 @@ def count_params(model):
 
     M = 1e6
 
-    logger.info('total param: {:.3f}M, conv: {:.3f}M, fc: {:.3f}M, others: {:.3f}M'
-                .format(total/M, conv/M, fc/M, others/M))
+    logger.info(
+        "total param: {:.3f}M, conv: {:.3f}M, fc: {:.3f}M, others: {:.3f}M".format(
+            total / M, conv / M, fc / M, others / M
+        )
+    )
 
 
 def count_flops(model, input_shape):
@@ -176,7 +188,7 @@ def count_flops(model, input_shape):
         from prototype.prototype.model.layer import WeightNet, WeightNet_DW
         from prototype.prototype.model.vision_transformer import MultiHeadAttention
     except NotImplementedError:
-        print('Check whether the file exists!')
+        print("Check whether the file exists!")
 
     logger = get_logger(__name__)
 
@@ -185,10 +197,24 @@ def count_flops(model, input_shape):
     def make_conv2d_hook(name):
 
         def conv2d_hook(m, input):
-            n, _, h, w = input[0].size(0), input[0].size(
-                1), input[0].size(2), input[0].size(3)
-            flops = n * h * w * m.in_channels * m.out_channels * m.kernel_size[0] * m.kernel_size[1] \
-                / m.stride[0] / m.stride[1] / m.groups
+            n, _, h, w = (
+                input[0].size(0),
+                input[0].size(1),
+                input[0].size(2),
+                input[0].size(3),
+            )
+            flops = (
+                n
+                * h
+                * w
+                * m.in_channels
+                * m.out_channels
+                * m.kernel_size[0]
+                * m.kernel_size[1]
+                / m.stride[0]
+                / m.stride[1]
+                / m.groups
+            )
             flops_dict[name] = int(flops)
 
         return conv2d_hook
@@ -201,6 +227,7 @@ def count_flops(model, input_shape):
                 prod *= dim
             flops = prod * m.out_features
             flops_dict[name] = int(flops)
+
         return fc_hook
 
     def make_attn_hook(name):
@@ -212,13 +239,18 @@ def count_flops(model, input_shape):
             flops_v = n * n * k
             flops = (flops_qk + flops_v) * h
             flops_dict[name] = int(flops)
+
         return attn_hook
 
     def make_condconv2d_hook(name):
 
         def condconv2d_hook(m, input):
-            n, _, h, w = input[0].size(0), input[0].size(
-                1), input[0].size(2), input[0].size(3)
+            n, _, h, w = (
+                input[0].size(0),
+                input[0].size(1),
+                input[0].size(2),
+                input[0].size(3),
+            )
             k, oc, c, kh, kw = m.weight.size()
             if m.combine_kernel:
                 # flops of combining kernel
@@ -227,14 +259,18 @@ def count_flops(model, input_shape):
                 # input: n*c*h*w
                 # weight: (n*oc)*c*kh*kw
                 # groups: n
-                flops_conv = n * h * w * oc * c * kh * kw / m.stride / m.stride / m.groups
+                flops_conv = (
+                    n * h * w * oc * c * kh * kw / m.stride / m.stride / m.groups
+                )
                 flops_dict[name] = int(flops_ck + flops_conv)
             else:
                 # flops of group convolution: one group for each expert
                 # input: n*(c*k)*h*w
                 # weight: (c*k)*oc*kh*kw
                 # groups: k
-                flops_conv = k * n * h * w * c * oc * kh * kw / m.stride / m.stride / m.groups
+                flops_conv = (
+                    k * n * h * w * c * oc * kh * kw / m.stride / m.stride / m.groups
+                )
                 # flops of combining features
                 flops_cf = n * h * w * oc * k
                 flops_dict[name] = int(flops_conv + flops_cf)
@@ -243,14 +279,20 @@ def count_flops(model, input_shape):
 
     def make_weightnet_hook(name):
         def weightnet_hook(m, input):
-            n, _, h, w = input[0].size(0), input[0].size(
-                1), input[0].size(2), input[0].size(3)
-            oc = m.oup if hasattr(m, 'oup') else m.inp
-            group = 1 if hasattr(m, 'oup') else m.inp
+            n, _, h, w = (
+                input[0].size(0),
+                input[0].size(1),
+                input[0].size(2),
+                input[0].size(3),
+            )
+            oc = m.oup if hasattr(m, "oup") else m.inp
+            group = 1 if hasattr(m, "oup") else m.inp
             # flops of group convolution: one group for each sample
             # input: n*c*h*w
             # weight: (n*oc)*c*kh*kw
-            flops_dict[name] = n * h * w * oc * m.inp * m.ksize * m.ksize / m.stride / m.stride / group
+            flops_dict[name] = (
+                n * h * w * oc * m.inp * m.ksize * m.ksize / m.stride / m.stride / group
+            )
 
         return weightnet_hook
 
@@ -283,7 +325,7 @@ def count_flops(model, input_shape):
     for k, v in flops_dict.items():
         # logger.info('module {}: {}'.format(k, v))
         total_flops += v
-    logger.info('total FLOPS: {:.2f}M'.format(total_flops/1e6))
+    logger.info("total FLOPS: {:.2f}M".format(total_flops / 1e6))
 
     for h in hooks:
         h.remove()
@@ -292,101 +334,104 @@ def count_flops(model, input_shape):
 def param_group_all(model, config):
     logger = get_logger(__name__)
     pgroup_normal = []
-    pgroup = {'bn_w': [], 'bn_b': [], 'conv_b': [], 'linear_b': []}
-    names = {'bn_w': [], 'bn_b': [], 'conv_b': [], 'linear_b': []}
-    if 'conv_dw_w' in config:
-        pgroup['conv_dw_w'] = []
-        names['conv_dw_w'] = []
-    if 'conv_dw_b' in config:
-        pgroup['conv_dw_b'] = []
-        names['conv_dw_b'] = []
-    if 'conv_dense_w' in config:
-        pgroup['conv_dense_w'] = []
-        names['conv_dense_w'] = []
-    if 'conv_dense_b' in config:
-        pgroup['conv_dense_b'] = []
-        names['conv_dense_b'] = []
-    if 'linear_w' in config:
-        pgroup['linear_w'] = []
-        names['linear_w'] = []
+    pgroup = {"bn_w": [], "bn_b": [], "conv_b": [], "linear_b": []}
+    names = {"bn_w": [], "bn_b": [], "conv_b": [], "linear_b": []}
+    if "conv_dw_w" in config:
+        pgroup["conv_dw_w"] = []
+        names["conv_dw_w"] = []
+    if "conv_dw_b" in config:
+        pgroup["conv_dw_b"] = []
+        names["conv_dw_b"] = []
+    if "conv_dense_w" in config:
+        pgroup["conv_dense_w"] = []
+        names["conv_dense_w"] = []
+    if "conv_dense_b" in config:
+        pgroup["conv_dense_b"] = []
+        names["conv_dense_b"] = []
+    if "linear_w" in config:
+        pgroup["linear_w"] = []
+        names["linear_w"] = []
 
     names_all = []
     type2num = defaultdict(lambda: 0)
     for name, m in model.named_modules():
         if isinstance(m, torch.nn.Conv2d):
             if m.bias is not None:
-                if 'conv_dw_b' in pgroup and m.groups == m.in_channels:
-                    pgroup['conv_dw_b'].append(m.bias)
-                    names_all.append(name+'.bias')
-                    names['conv_dw_b'].append(name+'.bias')
-                    type2num[m.__class__.__name__+'.bias(dw)'] += 1
-                elif 'conv_dense_b' in pgroup and m.groups == 1:
-                    pgroup['conv_dense_b'].append(m.bias)
-                    names_all.append(name+'.bias')
-                    names['conv_dense_b'].append(name+'.bias')
-                    type2num[m.__class__.__name__+'.bias(dense)'] += 1
+                if "conv_dw_b" in pgroup and m.groups == m.in_channels:
+                    pgroup["conv_dw_b"].append(m.bias)
+                    names_all.append(name + ".bias")
+                    names["conv_dw_b"].append(name + ".bias")
+                    type2num[m.__class__.__name__ + ".bias(dw)"] += 1
+                elif "conv_dense_b" in pgroup and m.groups == 1:
+                    pgroup["conv_dense_b"].append(m.bias)
+                    names_all.append(name + ".bias")
+                    names["conv_dense_b"].append(name + ".bias")
+                    type2num[m.__class__.__name__ + ".bias(dense)"] += 1
                 else:
-                    pgroup['conv_b'].append(m.bias)
-                    names_all.append(name+'.bias')
-                    names['conv_b'].append(name+'.bias')
-                    type2num[m.__class__.__name__+'.bias'] += 1
-            if 'conv_dw_w' in pgroup and m.groups == m.in_channels:
-                pgroup['conv_dw_w'].append(m.weight)
-                names_all.append(name+'.weight')
-                names['conv_dw_w'].append(name+'.weight')
-                type2num[m.__class__.__name__+'.weight(dw)'] += 1
-            elif 'conv_dense_w' in pgroup and m.groups == 1:
-                pgroup['conv_dense_w'].append(m.weight)
-                names_all.append(name+'.weight')
-                names['conv_dense_w'].append(name+'.weight')
-                type2num[m.__class__.__name__+'.weight(dense)'] += 1
+                    pgroup["conv_b"].append(m.bias)
+                    names_all.append(name + ".bias")
+                    names["conv_b"].append(name + ".bias")
+                    type2num[m.__class__.__name__ + ".bias"] += 1
+            if "conv_dw_w" in pgroup and m.groups == m.in_channels:
+                pgroup["conv_dw_w"].append(m.weight)
+                names_all.append(name + ".weight")
+                names["conv_dw_w"].append(name + ".weight")
+                type2num[m.__class__.__name__ + ".weight(dw)"] += 1
+            elif "conv_dense_w" in pgroup and m.groups == 1:
+                pgroup["conv_dense_w"].append(m.weight)
+                names_all.append(name + ".weight")
+                names["conv_dense_w"].append(name + ".weight")
+                type2num[m.__class__.__name__ + ".weight(dense)"] += 1
 
         elif isinstance(m, torch.nn.Linear):
             if m.bias is not None:
-                pgroup['linear_b'].append(m.bias)
-                names_all.append(name+'.bias')
-                names['linear_b'].append(name+'.bias')
-                type2num[m.__class__.__name__+'.bias'] += 1
-            if 'linear_w' in pgroup:
-                pgroup['linear_w'].append(m.weight)
-                names_all.append(name+'.weight')
-                names['linear_w'].append(name+'.weight')
-                type2num[m.__class__.__name__+'.weight'] += 1
-        elif (isinstance(m, torch.nn.BatchNorm2d)
-              or isinstance(m, torch.nn.BatchNorm1d)
-              or isinstance(m, link.nn.SyncBatchNorm2d)):
+                pgroup["linear_b"].append(m.bias)
+                names_all.append(name + ".bias")
+                names["linear_b"].append(name + ".bias")
+                type2num[m.__class__.__name__ + ".bias"] += 1
+            if "linear_w" in pgroup:
+                pgroup["linear_w"].append(m.weight)
+                names_all.append(name + ".weight")
+                names["linear_w"].append(name + ".weight")
+                type2num[m.__class__.__name__ + ".weight"] += 1
+        elif (
+            isinstance(m, torch.nn.BatchNorm2d)
+            or isinstance(m, torch.nn.BatchNorm1d)
+            or isinstance(m, link.nn.SyncBatchNorm2d)
+        ):
             if m.weight is not None:
-                pgroup['bn_w'].append(m.weight)
-                names_all.append(name+'.weight')
-                names['bn_w'].append(name+'.weight')
-                type2num[m.__class__.__name__+'.weight'] += 1
+                pgroup["bn_w"].append(m.weight)
+                names_all.append(name + ".weight")
+                names["bn_w"].append(name + ".weight")
+                type2num[m.__class__.__name__ + ".weight"] += 1
             if m.bias is not None:
-                pgroup['bn_b'].append(m.bias)
-                names_all.append(name+'.bias')
-                names['bn_b'].append(name+'.bias')
-                type2num[m.__class__.__name__+'.bias'] += 1
+                pgroup["bn_b"].append(m.bias)
+                names_all.append(name + ".bias")
+                names["bn_b"].append(name + ".bias")
+                type2num[m.__class__.__name__ + ".bias"] += 1
 
     for name, p in model.named_parameters():
         if name not in names_all:
             pgroup_normal.append(p)
 
-    param_groups = [{'params': pgroup_normal}]
+    param_groups = [{"params": pgroup_normal}]
     for ptype in pgroup.keys():
         if ptype in config.keys():
-            param_groups.append({'params': pgroup[ptype], **config[ptype]})
+            param_groups.append({"params": pgroup[ptype], **config[ptype]})
         else:
-            param_groups.append({'params': pgroup[ptype]})
+            param_groups.append({"params": pgroup[ptype]})
 
         logger.info(ptype)
         for k, v in param_groups[-1].items():
-            if k == 'params':
-                logger.info('   params: {}'.format(len(v)))
+            if k == "params":
+                logger.info("   params: {}".format(len(v)))
             else:
-                logger.info('   {}: {}'.format(k, v))
+                logger.info("   {}: {}".format(k, v))
 
     for ptype, pconf in config.items():
-        logger.info('names for {}({}): {}'.format(
-            ptype, len(names[ptype]), names[ptype]))
+        logger.info(
+            "names for {}({}): {}".format(ptype, len(names[ptype]), names[ptype])
+        )
 
     return param_groups, type2num
 
@@ -412,16 +457,16 @@ def detailed_metrics(output, target):
     precision_class = precision_score(target, output, average=None)
     recall_class = recall_score(target, output, average=None)
     f1_class = f1_score(target, output, average=None)
-    precision_avg = precision_score(target, output, average='micro')
-    recall_avg = recall_score(target, output, average='micro')
-    f1_avg = f1_score(target, output, average='micro')
+    precision_avg = precision_score(target, output, average="micro")
+    recall_avg = recall_score(target, output, average="micro")
+    f1_avg = f1_score(target, output, average="micro")
     return precision_class, recall_class, f1_class, precision_avg, recall_avg, f1_avg
 
 
 def load_state_model(model, state):
 
     logger = get_logger(__name__)
-    logger.info('======= loading model state... =======')
+    logger.info("======= loading model state... =======")
 
     model.load_state_dict(state, strict=False)
 
@@ -429,35 +474,35 @@ def load_state_model(model, state):
     model_keys = set(model.state_dict().keys())
     missing_keys = model_keys - state_keys
     for k in missing_keys:
-        logger.warn(f'missing key: {k}')
+        logger.warn(f"missing key: {k}")
 
 
 def load_state_optimizer(optimizer, state):
 
     logger = get_logger(__name__)
-    logger.info('======= loading optimizer state... =======')
+    logger.info("======= loading optimizer state... =======")
 
     optimizer.load_state_dict(state)
 
 
 def modify_state(state, config):
-    if hasattr(config, 'key'):
-        for key in config['key']:
-            if key == 'optimizer':
+    if hasattr(config, "key"):
+        for key in config["key"]:
+            if key == "optimizer":
                 state.pop(key)
-            elif key == 'last_iter':
-                state['last_iter'] = 0
-            elif key == 'ema':
-                state.pop('ema')
+            elif key == "last_iter":
+                state["last_iter"] = 0
+            elif key == "ema":
+                state.pop("ema")
 
-    if hasattr(config, 'model'):
-        for module in config['model']:
-            state['model'].pop(module)
+    if hasattr(config, "model"):
+        for module in config["model"]:
+            state["model"].pop(module)
     return state
 
 
 def mixup_data(x, y, alpha=1.0):
-    '''Returns mixed inputs, pairs of targets, and lambda'''
+    """Returns mixed inputs, pairs of targets, and lambda"""
     if alpha > 0:
         lam = np.random.beta(alpha, alpha)
     else:
@@ -478,7 +523,7 @@ def mix_criterion(criterion, pred, y_a, y_b, lam):
 def rand_bbox(size, lam):
     W = size[2]
     H = size[3]
-    cut_rat = np.sqrt(1. - lam)
+    cut_rat = np.sqrt(1.0 - lam)
     cut_w = np.int(W * cut_rat)
     cut_h = np.int(H * cut_rat)
 

@@ -27,15 +27,18 @@ class DaliDataloader(object):
         dataset (Dataset): just for evaluation.
 
     """
-    def __init__(self,
-                 pipeline,
-                 batch_size,
-                 epoch_size,
-                 num_threads=1,
-                 device_id=-1,
-                 last_iter=0,
-                 verbose=False,
-                 dataset=None):
+
+    def __init__(
+        self,
+        pipeline,
+        batch_size,
+        epoch_size,
+        num_threads=1,
+        device_id=-1,
+        last_iter=0,
+        verbose=False,
+        dataset=None,
+    ):
 
         if device_id == -1:
             device_id = torch.cuda.current_device()
@@ -46,10 +49,14 @@ class DaliDataloader(object):
         self.epoch_size = epoch_size
         self.last_iter = last_iter
         if verbose:
-            print('batch size: {}, epoch_size: {}, num_threads: {}, device: {}'
-                  .format(batch_size, epoch_size, num_threads, device_id))
-        self.pipe = _PipelineBase(pipeline, batch_size, num_threads, device_id,
-                                  **pipeline.extra_kwargs)
+            print(
+                "batch size: {}, epoch_size: {}, num_threads: {}, device: {}".format(
+                    batch_size, epoch_size, num_threads, device_id
+                )
+            )
+        self.pipe = _PipelineBase(
+            pipeline, batch_size, num_threads, device_id, **pipeline.extra_kwargs
+        )
 
     def __iter__(self):
         return _DataLoaderIter(self)
@@ -61,11 +68,13 @@ class DaliDataloader(object):
         pass
 
     def reset_pipeline(self, pipeline):
-        new_pipe = _PipelineBase(pipeline,
-                                 self.pipe.batch_size,
-                                 self.pipe.num_threads,
-                                 self.pipe.device_id,
-                                 **pipeline.extra_kwargs)
+        new_pipe = _PipelineBase(
+            pipeline,
+            self.pipe.batch_size,
+            self.pipe.num_threads,
+            self.pipe.device_id,
+            **pipeline.extra_kwargs
+        )
         self.pipe = new_pipe
 
 
@@ -107,11 +116,12 @@ class _DataLoaderIter(object):
         if data_batches[current_data_batch] is None:
             torch_types = list()
             torch_devices = list()
-            torch_gpu_device = torch.device('cuda', device_id)
-            torch_cpu_device = torch.device('cpu')
+            torch_gpu_device = torch.device("cuda", device_id)
+            torch_cpu_device = torch.device("cpu")
             for i in range(len(outputs)):
                 torch_types.append(to_torch_type[np.dtype(tensors[i].dtype())])
                 from nvidia.dali.backend import TensorGPU
+
                 if type(tensors[i]) is TensorGPU:
                     torch_devices.append(torch_gpu_device)
                 else:
@@ -119,10 +129,11 @@ class _DataLoaderIter(object):
 
             pyt_tensors = list()
             for i in range(len(outputs)):
-                pyt_tensors.append(torch.zeros(
-                    shapes[i],
-                    dtype=torch_types[i],
-                    device=torch_devices[i]))
+                pyt_tensors.append(
+                    torch.zeros(
+                        shapes[i], dtype=torch_types[i], device=torch_devices[i]
+                    )
+                )
 
             data_batches[current_data_batch] = pyt_tensors
         else:
@@ -156,9 +167,9 @@ class _DataLoaderIter(object):
             return batch
 
         self._check_stop()
-        batch = self._run_one_step(self.pipe,
-                                   self._data_batches,
-                                   self._current_data_batch)
+        batch = self._run_one_step(
+            self.pipe, self._data_batches, self._current_data_batch
+        )
 
         self._current_data_batch = (self._current_data_batch + 1) % 2
         if self.verbose and self._counter % 10 == 0:
@@ -169,9 +180,9 @@ class _DataLoaderIter(object):
             if self.verbose:
                 pass
 
-            batch = [item[:self._last_batch_size] for item in batch]
+            batch = [item[: self._last_batch_size] for item in batch]
 
-        return {'image': batch[0], 'label': batch[1]}
+        return {"image": batch[0], "label": batch[1]}
 
     next = __next__
 

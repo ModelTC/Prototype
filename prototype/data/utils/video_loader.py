@@ -1,4 +1,5 @@
 import cv2
+
 # from skvideo.io import VideoCapture
 # import skvideo.io
 import torch
@@ -15,7 +16,8 @@ class VideoFolder(DatasetFolder):
 
     def __init__(self, root, transform=None, target_transform=None, loader=None):
         super(VideoFolder, self).__init__(
-            root, loader, '.mp4', transform=transform, target_transform=target_transform)
+            root, loader, ".mp4", transform=transform, target_transform=target_transform
+        )
 
         self.vids = self.samples
 
@@ -37,7 +39,8 @@ class VideoFolder(DatasetFolder):
             # Capture frame-by-frame
             ret, frame = cap.read()
 
-            if not ret: break
+            if not ret:
+                break
 
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frames.append(self.transform(Image.fromarray(frame)).unsqueeze(0))

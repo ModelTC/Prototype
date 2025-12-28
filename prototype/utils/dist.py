@@ -8,21 +8,36 @@ import prototype.spring.linklink as link
 def link_dist(func):
 
     def wrapper(*args, **kwargs):
-        dist_init()
+        # Check if we should skip distributed initialization
+        skip_dist = os.environ.get("SKIP_DIST", "0") == "1"
+        dist_init(skip_dist=skip_dist)
         func(*args, **kwargs)
-        dist_finalize()
+        if not skip_dist:
+            dist_finalize()
 
     return wrapper
 
 
-def dist_init(method='single_node', device_id=0):
-    if method == 'slurm':
-        proc_id = int(os.environ['SLURM_PROCID'])
+def dist_init(method="single_node", device_id=0, skip_dist=False):
+    if skip_dist or os.environ.get("SKIP_DIST", "0") == "1":
+        # Single GPU mode: skip distributed initialization
+        torch.cuda.set_device(device_id)
+        # Set environment variables so link.get_rank() and link.get_world_size() return correct values
+        # without actually initializing distributed
+        if "SLURM_PROCID" not in os.environ:
+            os.environ["SLURM_PROCID"] = "0"
+        if "SLURM_NTASKS" not in os.environ:
+            os.environ["SLURM_NTASKS"] = "1"
+        # Don't call link.initialize() - it will try to init distributed
+        return 0, 1
+
+    if method == "slurm":
+        proc_id = int(os.environ["SLURM_PROCID"])
         # ntasks = int(os.environ['SLURM_NTASKS'])
         # node_list = os.environ['SLURM_NODELIST']
         num_gpus = torch.cuda.device_count()
         torch.cuda.set_device(proc_id % num_gpus)
-    elif method == 'single_node':
+    elif method == "single_node":
         torch.cuda.set_device(device_id)
 
     link.initialize()
@@ -43,7 +58,7 @@ def simple_group_split(world_size, rank, num_groups):
     for i in range(num_groups):
         groups.append(link.new_group(rank_list[i]))
     group_size = world_size // num_groups
-    return groups[rank//group_size]
+    return groups[rank // group_size]
 
 
 class DistModule(torch.nn.Module):
@@ -61,6 +76,9 @@ class DistModule(torch.nn.Module):
         return self.module(*inputs, **kwargs)
 
     def _register_hooks(self):
+        # Skip hooks in single GPU mode
+        if link.get_world_size() == 1:
+            return
         for i, (name, p) in enumerate(self.named_parameters()):
             if p.requires_grad:
                 p_tmp = p.expand_as(p)
@@ -70,11 +88,14 @@ class DistModule(torch.nn.Module):
 
     def _make_hook(self, name, p, i):
         def hook(*ignore):
-            link.allreduce_async(p.grad.data)
+            # Skip allreduce in single GPU mode
+            if link.get_world_size() > 1:
+                link.allreduce_async(p.grad.data)
+
         return hook
 
     def sync_gradients(self):
-        """ average gradients """
+        """average gradients"""
         if self.sync and link.get_world_size() > 1:
             for name, param in self.module.named_parameters():
                 if param.requires_grad and param.grad is not None:
@@ -83,7 +104,10 @@ class DistModule(torch.nn.Module):
             link.synchronize()
 
     def broadcast_params(self):
-        """ broadcast model parameters """
+        """broadcast model parameters"""
+        # Skip broadcast in single GPU mode
+        if link.get_world_size() == 1:
+            return
         for name, param in self.module.state_dict().items():
             link.broadcast(param, 0)
 
@@ -95,12 +119,13 @@ def _serialize_to_tensor(data, group=None):
     device = torch.cuda.current_device()
 
     buffer = pickle.dumps(data)
-    if len(buffer) > 1024 ** 3:
+    if len(buffer) > 1024**3:
         import logging
-        logger = logging.getLogger('global')
+
+        logger = logging.getLogger("global")
         logger.warning(
             "Rank {} trying to all-gather {:.2f} GB of data on device {}".format(
-                link.get_rank(), len(buffer) / (1024 ** 3), device
+                link.get_rank(), len(buffer) / (1024**3), device
             )
         )
     storage = torch.ByteStorage.from_buffer(buffer)
@@ -109,8 +134,7 @@ def _serialize_to_tensor(data, group=None):
 
 
 def broadcast_object(obj, group=None):
-    """make suare obj is picklable
-    """
+    """make suare obj is picklable"""
     if link.get_world_size() == 1:
         return obj
 

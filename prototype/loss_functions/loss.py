@@ -13,7 +13,7 @@ class LabelSmoothCELoss(_Loss):
         one_hot = torch.zeros_like(input)
         one_hot.fill_(self.v)
         y = label.to(torch.long).view(-1, 1)
-        one_hot.scatter_(1, y, 1-self.smooth_ratio+self.v)
+        one_hot.scatter_(1, y, 1 - self.smooth_ratio + self.v)
 
-        loss = - torch.sum(F.log_softmax(input, 1) * (one_hot.detach())) / input.size(0)
+        loss = -torch.sum(F.log_softmax(input, 1) * (one_hot.detach())) / input.size(0)
         return loss

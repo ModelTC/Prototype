@@ -45,7 +45,9 @@ class OneOf(Compose):
 @TRANSFORM.register("oneorother")
 class OneOrOther(Compose):
     def __init__(self, transforms, p):
-        assert len(transforms) == 2, f"OneOrOther compose only support two transforms, given: {transforms}!"
+        assert (
+            len(transforms) == 2
+        ), f"OneOrOther compose only support two transforms, given: {transforms}!"
         super(OneOrOther, self).__init__(transforms)
         self.p = p
 

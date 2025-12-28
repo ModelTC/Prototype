@@ -6,8 +6,17 @@ from .layers import VanillaMlp, DropPath
 
 class MixerBlock(nn.Module):
 
-    def __init__(self, num_patch, dim, token_mlp_ratio, channel_mlp_ratio,
-                 drop=0., drop_path=0., norm_layer=nn.LayerNorm, act_layer=nn.GELU):
+    def __init__(
+        self,
+        num_patch,
+        dim,
+        token_mlp_ratio,
+        channel_mlp_ratio,
+        drop=0.0,
+        drop_path=0.0,
+        norm_layer=nn.LayerNorm,
+        act_layer=nn.GELU,
+    ):
 
         super().__init__()
         self.norm1 = norm_layer(dim)
@@ -15,8 +24,10 @@ class MixerBlock(nn.Module):
 
         token_mlp_dim = round(dim * token_mlp_ratio)
         channel_mlp_dim = round(dim * channel_mlp_ratio)
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        self.token_mix = VanillaMlp(num_patch, token_mlp_dim, num_patch, act_layer, drop)
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.token_mix = VanillaMlp(
+            num_patch, token_mlp_dim, num_patch, act_layer, drop
+        )
         self.channel_mix = VanillaMlp(dim, channel_mlp_dim, dim, act_layer, drop)
 
     def forward(self, x):
@@ -32,8 +43,20 @@ class MixerBlock(nn.Module):
 
 class MLPMixer(VisionTransformer):
 
-    def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
-                 token_mlp_ratio=0.5, channel_mlp_ratio=4.0, representation_size=None, drop_rate=0., drop_path_rate=0.):
+    def __init__(
+        self,
+        img_size=224,
+        patch_size=16,
+        in_chans=3,
+        num_classes=1000,
+        embed_dim=768,
+        depth=12,
+        token_mlp_ratio=0.5,
+        channel_mlp_ratio=4.0,
+        representation_size=None,
+        drop_rate=0.0,
+        drop_path_rate=0.0,
+    ):
         """
         Args:
             img_size (int, tuple): input image size
@@ -59,9 +82,22 @@ class MLPMixer(VisionTransformer):
         mlp_ratio = token_mlp_ratio
         self.token_mlp_ratio = token_mlp_ratio
         self.channel_mlp_ratio = channel_mlp_ratio
-        super(MLPMixer, self).__init__(img_size, patch_size, in_chans, num_classes, embed_dim, depth,
-                                       num_heads, mlp_ratio, qkv_bias, qk_scale, representation_size,
-                                       drop_rate, attn_drop_rate, drop_path_rate)
+        super(MLPMixer, self).__init__(
+            img_size,
+            patch_size,
+            in_chans,
+            num_classes,
+            embed_dim,
+            depth,
+            num_heads,
+            mlp_ratio,
+            qkv_bias,
+            qk_scale,
+            representation_size,
+            drop_rate,
+            attn_drop_rate,
+            drop_path_rate,
+        )
 
         # Weight init
         # raise NotImplementedError
@@ -80,13 +116,24 @@ class MLPMixer(VisionTransformer):
         pass
 
     def init_transformer(self):
-        dpr = [x.item() for x in torch.linspace(0, self.drop_path_rate, self.depth)]  # stochastic depth decay rule
-        self.blocks = nn.Sequential(*[
-            self.block_type(
-                num_patch=self.patch_embed.num_patches, dim=self.embed_dim,
-                token_mlp_ratio=self.token_mlp_ratio, channel_mlp_ratio=self.channel_mlp_ratio,
-                drop=self.drop_rate, drop_path=dpr[i], norm_layer=self.norm_layer, act_layer=self.act_layer)
-            for i in range(self.depth)])
+        dpr = [
+            x.item() for x in torch.linspace(0, self.drop_path_rate, self.depth)
+        ]  # stochastic depth decay rule
+        self.blocks = nn.Sequential(
+            *[
+                self.block_type(
+                    num_patch=self.patch_embed.num_patches,
+                    dim=self.embed_dim,
+                    token_mlp_ratio=self.token_mlp_ratio,
+                    channel_mlp_ratio=self.channel_mlp_ratio,
+                    drop=self.drop_rate,
+                    drop_path=dpr[i],
+                    norm_layer=self.norm_layer,
+                    act_layer=self.act_layer,
+                )
+                for i in range(self.depth)
+            ]
+        )
         self.norm = self.norm_layer(self.embed_dim)
 
     def patch_embedding(self, x):

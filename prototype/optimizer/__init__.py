@@ -5,4 +5,4 @@ from torch.optim import SGD, RMSprop, Adadelta, Adagrad, Adam, AdamW  # noqa F40
 
 def optim_entry(config):
     rank = link.get_rank()
-    return globals()[config['type']](**config['kwargs'])
+    return globals()[config["type"]](**config["kwargs"])

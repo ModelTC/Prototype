@@ -9,6 +9,7 @@ def _ntuple(n):
         if isinstance(x, collections.abc.Iterable):
             return x
         return tuple(repeat(x, n))
+
     return parse
 
 
@@ -30,7 +31,7 @@ def make_divisible(v, divisor=8, min_value=None):
 
 def replace_batchnorm(net):
     for child_name, child in net.named_children():
-        if hasattr(child, 'fuse'):
+        if hasattr(child, "fuse"):
             setattr(net, child_name, child.fuse())
         elif isinstance(child, torch.nn.Conv2d):
             child.bias = torch.nn.Parameter(torch.zeros(child.weight.size(0)))
@@ -42,9 +43,11 @@ def replace_batchnorm(net):
 
 def replace_layernorm(net):
     import apex
+
     for child_name, child in net.named_children():
         if isinstance(child, torch.nn.LayerNorm):
-            setattr(net, child_name, apex.normalization.FusedLayerNorm(
-                child.weight.size(0)))
+            setattr(
+                net, child_name, apex.normalization.FusedLayerNorm(child.weight.size(0))
+            )
         else:
             replace_layernorm(child)

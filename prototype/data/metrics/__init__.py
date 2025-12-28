@@ -6,10 +6,9 @@ from .imagenetc_evaluator import ImageNetCEvaluator
 
 def build_evaluator(cfg):
     evaluator = {
-        'custom': CustomEvaluator,
-        'imagenet': ImageNetEvaluator,
-        'multiclass': MultiClsEvaluator,
-        'imagenetc': ImageNetCEvaluator,
-
-    }[cfg['type']]
-    return evaluator(**cfg['kwargs'])
+        "custom": CustomEvaluator,
+        "imagenet": ImageNetEvaluator,
+        "multiclass": MultiClsEvaluator,
+        "imagenetc": ImageNetCEvaluator,
+    }[cfg["type"]]
+    return evaluator(**cfg["kwargs"])
