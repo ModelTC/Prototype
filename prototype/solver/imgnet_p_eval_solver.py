@@ -64,7 +64,14 @@ class MultiEvalSolver_P(BaseSolver):
 
         if model is not None:
             self.model = model
-            self.model.cuda()
+            # Move model to the correct GPU for this rank
+            # Note: dist_init already set the device, but ensure it's correct
+            device_id = self.dist.rank % torch.cuda.device_count()
+            torch.cuda.set_device(device_id)
+            self.model.cuda(device=device_id)
+            # Wrap with DistModule for distributed support
+            if not isinstance(self.model, DistModule):
+                self.model = DistModule(self.model, self.config.dist.sync)
         else:
             self.build_model()
         # self.check_rank()  # Not needed for single GPU
@@ -73,22 +80,26 @@ class MultiEvalSolver_P(BaseSolver):
         # self.build_data()
         # self.build_lr_scheduler()
         # send_info(self.prototype_info)
-        count_params(self.model)
-        count_flops(
-            self.model,
-            input_shape=[
-                1,
-                3,
-                self.config.data.input_size,
-                self.config.data.input_size,
-            ],
-        )
+        # Synchronize all ranks before counting params/flops
+        if self.dist.world_size > 1:
+            link.barrier()
+        if self.dist.rank == 0:
+            count_params(self.model)
+            count_flops(
+                self.model,
+                input_shape=[
+                    1,
+                    3,
+                    self.config.data.input_size,
+                    self.config.data.input_size,
+                ],
+            )
 
     def setup_env(self):
-        # dist - single GPU mode
+        # dist
         self.dist = EasyDict()
-        self.dist.rank = 0
-        self.dist.world_size = 1
+        self.dist.rank = link.get_rank()
+        self.dist.world_size = link.get_world_size()
         self.prototype_info.world_size = self.dist.world_size
         # directories
         self.path = EasyDict()
@@ -114,6 +125,8 @@ class MultiEvalSolver_P(BaseSolver):
 
         self.state = {}
         self.state["last_iter"] = 0
+        # fp16
+        self.fp16 = getattr(self.config, "fp16", False)
         # others
         torch.backends.cudnn.benchmark = True
 
@@ -138,21 +151,27 @@ class MultiEvalSolver_P(BaseSolver):
 
         self.model = model_entry(self.config.model)
         self.prototype_info.model = self.config.model.type
-        self.model.cuda()
+        # Move model to the correct GPU for this rank
+        device_id = self.dist.rank % torch.cuda.device_count()
+        torch.cuda.set_device(device_id)
+        self.model.cuda(device=device_id)
 
-        count_params(self.model)
-        count_flops(
-            self.model,
-            input_shape=[
-                1,
-                3,
-                self.config.data.input_size,
-                self.config.data.input_size,
-            ],
-        )
+        if self.dist.rank == 0:
+            count_params(self.model)
+            count_flops(
+                self.model,
+                input_shape=[
+                    1,
+                    3,
+                    self.config.data.input_size,
+                    self.config.data.input_size,
+                ],
+            )
 
         # handle fp16
-
+        # Synchronize all ranks before wrapping with DistModule
+        if self.dist.world_size > 1:
+            link.barrier()
         self.model = DistModule(self.model, self.config.dist.sync)
 
         if "model" in self.state:
@@ -401,11 +420,15 @@ class MultiEvalSolver_P(BaseSolver):
     @torch.no_grad()
     def evaluate(self):
         self.model.eval()
+        # Ensure all ranks are synchronized before evaluation
+        if self.dist.world_size > 1:
+            link.barrier()
         imagenetp_flag = self.config.data.test.get("imagenet_p", False)
         root_dir = self.config.data.test.root_dir
 
         assert imagenetp_flag, "This solver is only for imagenet-p"
 
+        fp_list = []
         perturbation_list = [
             "brightness",
             "motion_blur",
@@ -433,32 +456,46 @@ class MultiEvalSolver_P(BaseSolver):
             self.config.data.test.root_dir = os.path.join(root_dir, perturbation)
             self.build_data()
 
-            predictions, ranks = [], []
             for data, target in self.val_data["loader"]:
                 num_vids = data.size(0)
-                data = data.view(-1, 3, 224, 224).cuda()
+                # Move data to the correct GPU for this rank
+                device_id = self.dist.rank % torch.cuda.device_count()
+                data = data.view(-1, 3, 224, 224).cuda(device=device_id)
                 output = self.model(data)
 
                 for vid in output.view(num_vids, -1, 1000):
-                    predictions = vid.argmax(1).to("cpu").numpy().tolist()
-                    res = {"predictions": predictions}
+                    vid_predictions = vid.argmax(1).to("cpu").numpy().tolist()
+                    res = {"predictions": vid_predictions}
                     writer.write(json.dumps(res, ensure_ascii=False) + "\n")
-                    # predictions.append(vid.argmax(1).to('cpu').numpy())
-                    # ranks.append([np.uint16(rankdata(-frame, method='ordinal')) for frame in vid.to('cpu').numpy()])
-            # ranks = np.asarray(ranks)
+                    # Note: predictions and ranks were previously collected here but are now written directly to file
 
             writer.flush()
             writer.close()
-            # link.barrier()  # Not needed for single GPU
 
-            # get fp - single GPU mode, no need to merge files
+            if self.dist.world_size > 1:
+                link.barrier()
+
+            # get fp - merge multi-rank results on rank 0
             if self.dist.rank == 0:
-                # Single GPU: directly use the result file as merged file
-                merged_file = res_file.replace(f".rank{self.dist.rank}", ".all")
-                # Simply copy the single result file to .all file
-                import shutil
+                # Construct the base filename without rank suffix
+                base_file = res_file.replace(f".rank{self.dist.rank}", "")
+                merged_file = base_file + ".all"
+                if self.dist.world_size == 1:
+                    # Single GPU: directly use the result file as merged file
+                    import shutil
 
-                shutil.copy(res_file, merged_file)
+                    shutil.copy(res_file, merged_file)
+                else:
+                    with open(merged_file, "w") as merged_fp:
+                        for rank_id in range(self.dist.world_size):
+                            part_file = base_file + f".rank{rank_id}"
+                            if not os.path.exists(part_file):
+                                self.logger.warning(
+                                    f"Result file not found for rank {rank_id}: {part_file}"
+                                )
+                                continue
+                            with open(part_file) as part_fp:
+                                merged_fp.writelines(part_fp.readlines())
 
                 pre_res = []
                 with open(merged_file) as f:
@@ -475,8 +512,24 @@ class MultiEvalSolver_P(BaseSolver):
                     f"Model: {self.prefix_name} Perturbation: {perturbation}"
                 )
                 self.logger.info("Flipping Prob\t{:.5f}".format(self.fp))
+                fp_list.append(self.fp)
 
-            # link.barrier()  # Not needed for single GPU
+            if self.dist.world_size > 1:
+                link.barrier()
+
+        if self.dist.rank == 0 and fp_list:
+            fp_mean = float(np.mean(fp_list))
+            fp_neg_mean = -fp_mean
+            out_path = os.path.join(self.path.result_path, "flip_prob_neg_mean.json")
+            with open(out_path, "w") as f:
+                json.dump(
+                    {
+                        "flip_prob_mean": fp_mean,
+                        "flip_prob_neg_mean": fp_neg_mean,
+                    },
+                    f,
+                    indent=2,
+                )
 
 
 @link_dist
@@ -502,7 +555,8 @@ def main():
             ckpt_path = os.path.join(file_path, model_name + ".pth.tar")
             try:
                 model = model_dict[model_name]
-                print("Loading pretrain model for " + model_name)
+                if link.get_rank() == 0:
+                    print("Loading pretrain model for " + model_name)
                 state = torch.load(ckpt_path, "cpu")
                 # state = modify_state(state, EasyDict())
                 for key in list(state["model"].keys()):
@@ -511,11 +565,17 @@ def main():
                             key
                         )
                 load_state_model(model, state["model"])
+                # Synchronize all ranks after model loading
+                if link.get_world_size() > 1:
+                    link.barrier()
             except:
-                print("Error when load " + model_name)
-                print(traceback.format_exc())
-                status.write(f"Error when load {model_name}, skip it.\n")
-                status.write(traceback.format_exc())
+                if link.get_rank() == 0:
+                    print("Error when load " + model_name)
+                    print(traceback.format_exc())
+                    status.write(f"Error when load {model_name}, skip it.\n")
+                    status.write(traceback.format_exc())
+                if link.get_world_size() > 1:
+                    link.barrier()
                 continue
 
             solver = MultiEvalSolver_P(config, model, model_name)

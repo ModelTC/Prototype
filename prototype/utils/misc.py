@@ -4,7 +4,7 @@ import torch
 import prototype.spring.linklink as link
 from collections import defaultdict
 import numpy as np
-
+import torch.distributed as dist
 try:
     from sklearn.metrics import precision_score, recall_score, f1_score
 except ImportError:
@@ -36,6 +36,8 @@ class AverageMeter(object):
         self.avg = 0.0
 
     def reduce_update(self, tensor, num=1):
+        if not dist.is_available() or not dist.is_initialized():
+            return tensor
         link.allreduce(tensor)
         self.update(tensor.item(), num=num)
 
@@ -57,8 +59,8 @@ class AverageMeter(object):
 
 
 def makedir(path):
-    if link.get_rank() == 0 and not os.path.exists(path):
-        os.makedirs(path)
+    if link.get_rank() == 0:
+        os.makedirs(path, exist_ok=True)
     link.barrier()
 
 

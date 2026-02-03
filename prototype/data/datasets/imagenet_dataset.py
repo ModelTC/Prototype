@@ -1,6 +1,7 @@
 import os.path as osp
 import os
 import json
+import hashlib
 import requests
 import time
 import numpy as np
@@ -12,6 +13,8 @@ from prototype.prototype.data.image_reader import build_image_reader
 import prototype.spring.linklink as link
 import random
 import torch
+
+_FILENAME_INDEX_CACHE = {}
 
 
 class ImageNetDataset(BaseDataset):
@@ -90,15 +93,102 @@ class ImageNetDataset(BaseDataset):
             transform=transform,
             evaluator=evaluator,
         )
+        # Optional filename index for faster lookup when meta entries
+        # don't include subdirectories.
+        self._filename_index = None
+        self._filename_index_ready = False
+        self._maybe_build_filename_index()
 
     def __len__(self):
         return self.num
+
+    def _index_cache_key(self):
+        try:
+            meta_mtime = osp.getmtime(self.meta_file)
+        except (OSError, FileNotFoundError):
+            meta_mtime = None
+        return (self.root_dir, self.meta_file, meta_mtime)
+
+    def _index_cache_path(self):
+        try:
+            meta_mtime = osp.getmtime(self.meta_file)
+        except (OSError, FileNotFoundError):
+            meta_mtime = None
+        cache_id = f"{self.meta_file}:{meta_mtime}"
+        digest = hashlib.md5(cache_id.encode("utf-8")).hexdigest()[:12]
+        return osp.join(self.root_dir, f".filename_index_{digest}.json")
+
+    def _maybe_build_filename_index(self):
+        if self._filename_index_ready:
+            return
+        self._filename_index_ready = True
+        if self.use_server:
+            return
+        if not self.metas:
+            return
+        if not osp.isdir(self.root_dir):
+            return
+        sample_name = self.metas[0]["filename"]
+        if "/" in sample_name or "\\" in sample_name:
+            return
+
+        cache_key = self._index_cache_key()
+        cached = _FILENAME_INDEX_CACHE.get(cache_key)
+        if cached:
+            self._filename_index = cached
+            return
+
+        cache_path = self._index_cache_path()
+        if osp.exists(cache_path):
+            try:
+                with open(cache_path, "r") as f:
+                    cached_obj = json.load(f)
+                if (
+                    cached_obj.get("meta_file") == self.meta_file
+                    and cached_obj.get("index")
+                ):
+                    self._filename_index = cached_obj["index"]
+                    _FILENAME_INDEX_CACHE[cache_key] = self._filename_index
+                    return
+            except Exception:
+                pass
+
+        targets = {meta["filename"] for meta in self.metas}
+        index = {}
+        for root, _, files in os.walk(self.root_dir):
+            for fname in files:
+                if fname in targets and fname not in index:
+                    index[fname] = osp.join(root, fname)
+                    if len(index) == len(targets):
+                        self._filename_index = index
+                        _FILENAME_INDEX_CACHE[cache_key] = self._filename_index
+                        try:
+                            with open(cache_path, "w") as f:
+                                json.dump(
+                                    {
+                                        "meta_file": self.meta_file,
+                                        "index": self._filename_index,
+                                    },
+                                    f,
+                                )
+                        except Exception:
+                            pass
+                        return
+        self._filename_index = index
+        _FILENAME_INDEX_CACHE[cache_key] = self._filename_index
+        try:
+            with open(cache_path, "w") as f:
+                json.dump({"meta_file": self.meta_file, "index": self._filename_index}, f)
+        except Exception:
+            pass
 
     def _find_file_in_subdirs(self, root_dir, filename):
         """
         Find a file in subdirectories if it's not found directly.
         This handles ImageNet validation data organized in class folders.
         """
+        if self._filename_index is not None and filename in self._filename_index:
+            return self._filename_index[filename]
         # Check cache first
         if filename in self._file_path_cache:
             return self._file_path_cache[filename]
@@ -247,15 +337,102 @@ class RankedImageNetDataset(BaseDataset):
             transform=transform,
             evaluator=evaluator,
         )
+        # Optional filename index for faster lookup when meta entries
+        # don't include subdirectories.
+        self._filename_index = None
+        self._filename_index_ready = False
+        self._maybe_build_filename_index()
 
     def __len__(self):
         return self.num
+
+    def _index_cache_key(self):
+        try:
+            meta_mtime = osp.getmtime(self.meta_file)
+        except (OSError, FileNotFoundError):
+            meta_mtime = None
+        return (self.root_dir, self.meta_file, meta_mtime, self.rank)
+
+    def _index_cache_path(self):
+        try:
+            meta_mtime = osp.getmtime(self.meta_file)
+        except (OSError, FileNotFoundError):
+            meta_mtime = None
+        cache_id = f"{self.meta_file}:{meta_mtime}:rank{self.rank}"
+        digest = hashlib.md5(cache_id.encode("utf-8")).hexdigest()[:12]
+        return osp.join(self.root_dir, f".filename_index_{digest}.json")
+
+    def _maybe_build_filename_index(self):
+        if self._filename_index_ready:
+            return
+        self._filename_index_ready = True
+        if self.use_server:
+            return
+        if not self.metas:
+            return
+        if not osp.isdir(self.root_dir):
+            return
+        sample_name = self.metas[0]["filename"]
+        if "/" in sample_name or "\\" in sample_name:
+            return
+
+        cache_key = self._index_cache_key()
+        cached = _FILENAME_INDEX_CACHE.get(cache_key)
+        if cached:
+            self._filename_index = cached
+            return
+
+        cache_path = self._index_cache_path()
+        if osp.exists(cache_path):
+            try:
+                with open(cache_path, "r") as f:
+                    cached_obj = json.load(f)
+                if (
+                    cached_obj.get("meta_file") == self.meta_file
+                    and cached_obj.get("index")
+                ):
+                    self._filename_index = cached_obj["index"]
+                    _FILENAME_INDEX_CACHE[cache_key] = self._filename_index
+                    return
+            except Exception:
+                pass
+
+        targets = {meta["filename"] for meta in self.metas}
+        index = {}
+        for root, _, files in os.walk(self.root_dir):
+            for fname in files:
+                if fname in targets and fname not in index:
+                    index[fname] = osp.join(root, fname)
+                    if len(index) == len(targets):
+                        self._filename_index = index
+                        _FILENAME_INDEX_CACHE[cache_key] = self._filename_index
+                        try:
+                            with open(cache_path, "w") as f:
+                                json.dump(
+                                    {
+                                        "meta_file": self.meta_file,
+                                        "index": self._filename_index,
+                                    },
+                                    f,
+                                )
+                        except Exception:
+                            pass
+                        return
+        self._filename_index = index
+        _FILENAME_INDEX_CACHE[cache_key] = self._filename_index
+        try:
+            with open(cache_path, "w") as f:
+                json.dump({"meta_file": self.meta_file, "index": self._filename_index}, f)
+        except Exception:
+            pass
 
     def _find_file_in_subdirs(self, root_dir, filename):
         """
         Find a file in subdirectories if it's not found directly.
         This handles ImageNet validation data organized in class folders.
         """
+        if self._filename_index is not None and filename in self._filename_index:
+            return self._filename_index[filename]
         # Check cache first
         if filename in self._file_path_cache:
             return self._file_path_cache[filename]

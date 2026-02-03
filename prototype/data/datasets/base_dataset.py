@@ -156,7 +156,8 @@ class BaseDataset(Dataset):
         if x is None:
             return x
         if torch.is_tensor(x):
-            return x.cpu().numpy()
+            # return x.cpu().numpy()
+            return x.cpu().detach().numpy()
         if isinstance(x, list):
             x = [_.cpu().numpy() if torch.is_tensor(_) else _ for _ in x]
         return x

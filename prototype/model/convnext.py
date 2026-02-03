@@ -184,7 +184,7 @@ def convnext_base(drop_path_rate=0.0, **kwargs):
     model_args = dict(depths=[3, 3, 27, 3], dims=[128, 256, 512, 1024])
     model = timm.models.convnext._create_convnext(
         "convnext_base.fb_in1k",
-        pretrained=False,
+        pretrained=True,
         drop_path_rate=drop_path_rate,
         **model_args,
         **kwargs

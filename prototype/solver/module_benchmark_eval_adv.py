@@ -158,7 +158,9 @@ class ClsSolver(BaseSolver):
             link.fp16.init()
             self.model.half()
 
-
+        
+        self.model_src = DistModule(self.model_src, self.config.dist.sync)
+        self.model_tgt = DistModule(self.model_tgt, self.config.dist.sync)
         if 'model' in self.state_src:
             load_state_model(self.model_src, self.state_src["model"])
             load_state_model(self.model_tgt, self.state_tgt["model"])
@@ -166,9 +168,7 @@ class ClsSolver(BaseSolver):
 
             load_state_model(self.model_src, self.state_src)
             load_state_model(self.model_tgt, self.state_tgt)
-        self.model_src = DistModule(self.model_src, self.config.dist.sync)
-        self.model_tgt = DistModule(self.model_tgt, self.config.dist.sync)
-
+        
 
     def build_data(self):
         # self.config.data.last_iter = self.state_tgt["last_iter"]

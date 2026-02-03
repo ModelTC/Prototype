@@ -48,7 +48,7 @@ class MultiClsEvaluator(Evaluator):
             s_pred = pred[:, i, :]
             s_label = label[:, i]
             _, s_pred = s_pred.topk(1, 1, True, True)
-            correct = s_pred.view(-1).eq(s_label)
+            correct = s_pred.reshape(-1).eq(s_label)
             correct_k = correct.float().sum()
             acc = correct_k.mul_(100.0 / num)
             res.update({label_name_list[i]: acc.item()})

@@ -19,11 +19,19 @@ allreduce_async = functools.partial(dist.all_reduce, async_op=True)
 
 
 def get_rank():
-    return int(os.environ.get("SLURM_PROCID", 0))
+    if "SLURM_PROCID" in os.environ:
+        return int(os.environ["SLURM_PROCID"])
+    if "RANK" in os.environ:
+        return int(os.environ["RANK"])
+    return 0
 
 
 def get_world_size():
-    return int(os.environ.get("SLURM_NTASKS", 1))
+    if "SLURM_NTASKS" in os.environ:
+        return int(os.environ["SLURM_NTASKS"])
+    if "WORLD_SIZE" in os.environ:
+        return int(os.environ["WORLD_SIZE"])
+    return 1
 
 
 def barrier():

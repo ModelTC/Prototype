@@ -9,6 +9,7 @@ Supports loading different pretrained weights:
 import torch
 import torch.nn as nn
 import os
+import inspect
 
 
 def clip_vit_l_14(
@@ -59,31 +60,32 @@ def clip_vit_l_14(
             "open_clip is required. Install it with: pip install open-clip-torch"
         )
 
+    def _create_open_clip(model_name, pretrained_name=None):
+        kwargs = {"device": "cpu"}
+        if pretrained_name is not None:
+            kwargs["pretrained"] = pretrained_name
+        # PyTorch 2.6 defaults weights_only=True; disable if supported
+        sig = inspect.signature(open_clip.create_model_and_transforms)
+        if "weights_only" in sig.parameters:
+            kwargs["weights_only"] = False
+        return open_clip.create_model_and_transforms(model_name, **kwargs)
+
     # Create CLIP model
     # If use_pretrain_path is True, always create base OpenAI model and load from checkpoint
     if use_pretrain_path and checkpoint_path and os.path.exists(checkpoint_path):
-        # Create base OpenAI CLIP model, then load weights from checkpoint
-        model, _, _ = open_clip.create_model_and_transforms(
-            "ViT-L-14", pretrained="openai", device="cpu"
-        )
+        model, _, _ = _create_open_clip("ViT-L-14", "openai")
         vision_model = model.visual
     elif pretrained == "fare2-clip":
         # Load FARE2 model from HuggingFace
-        model, _, _ = open_clip.create_model_and_transforms(
-            "hf-hub:chs20/fare2-clip", device="cpu"
-        )
+        model, _, _ = _create_open_clip("hf-hub:chs20/fare2-clip")
         vision_model = model.visual
     elif pretrained == "tecoa2-clip":
         # Load TeCoA2 model from HuggingFace
-        model, _, _ = open_clip.create_model_and_transforms(
-            "hf-hub:chs20/tecoa2-clip", device="cpu"
-        )
+        model, _, _ = _create_open_clip("hf-hub:chs20/tecoa2-clip")
         vision_model = model.visual
     else:
         # Create standard OpenAI CLIP model
-        model, _, _ = open_clip.create_model_and_transforms(
-            "ViT-L-14", pretrained="openai", device="cpu"
-        )
+        model, _, _ = _create_open_clip("ViT-L-14", "openai")
         vision_model = model.visual
 
     # If checkpoint_path is provided and exists, load visual encoder weights
@@ -104,13 +106,37 @@ def clip_vit_l_14(
             state_dict = checkpoint
 
         # Remove 'module.' prefix if present
-        new_state_dict = {}
+        cleaned_state_dict = {}
         for key, value in state_dict.items():
             new_key = key.replace("module.", "") if key.startswith("module.") else key
-            new_state_dict[new_key] = value
+            cleaned_state_dict[new_key] = value
 
-        # Load into vision model
-        vision_model.load_state_dict(new_state_dict, strict=False)
+        # Filter to vision-only keys when loading a full CLIP checkpoint
+        vision_sd = vision_model.state_dict()
+        vision_keys = set(vision_sd.keys())
+        vision_state = {}
+        skipped = []
+        for key, value in cleaned_state_dict.items():
+            if key.startswith("visual."):
+                vkey = key[len("visual.") :]
+            else:
+                vkey = key
+            if vkey in vision_keys:
+                # Only keep matching shapes to avoid size mismatch
+                if vision_sd[vkey].shape == value.shape:
+                    vision_state[vkey] = value
+                else:
+                    skipped.append((vkey, tuple(value.shape), tuple(vision_sd[vkey].shape)))
+
+        # If we couldn't match any keys, fall back to the cleaned dict
+        if vision_state:
+            vision_model.load_state_dict(vision_state, strict=False)
+            if skipped:
+                print(
+                    f"[clip_vit_l_14] Skipped {len(skipped)} mismatched keys (e.g. {skipped[0]})"
+                )
+        else:
+            vision_model.load_state_dict(cleaned_state_dict, strict=False)
 
     # Add classification head if needed
     if num_classes != 0:

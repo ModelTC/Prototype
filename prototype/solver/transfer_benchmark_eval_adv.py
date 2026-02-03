@@ -84,8 +84,6 @@ class ClsSolver(BaseSolver):
         if hasattr(self.config.saver, "pretrain"):
             self.state_src = torch.load(self.config.saver.pretrain.path_src, "cpu",weights_only=False)
             self.state_tgt = torch.load(self.config.saver.pretrain.path_tgt, "cpu",weights_only=False)
-            # self.state_src = torch.load(self.config.saver.pretrain.path_src, "cpu")
-            # self.state_tgt = torch.load(self.config.saver.pretrain.path_tgt, "cpu")
             # self.logger.info(
             #     f"source model: Recovering from {self.config.saver.pretrain.path_src}, keys={list(self.state_src.keys())}"
             # # )
@@ -94,7 +92,7 @@ class ClsSolver(BaseSolver):
             # # )
             if hasattr(self.config.saver.pretrain, "ignore"):
                 self.state = modify_state(self.state, self.config.saver.pretrain.ignore)
-            # self.state_tgt["last_iter"] = 0
+            self.state_tgt["last_iter"] = 0
         else:
             self.state = {}
             self.state["last_iter"] = 0
@@ -158,21 +156,20 @@ class ClsSolver(BaseSolver):
             link.fp16.init()
             self.model.half()
 
-
         if 'model' in self.state_src:
             load_state_model(self.model_src, self.state_src["model"])
+            
+        else:
+            load_state_model(self.model_src, self.state_src)  
+        if 'model' in self.state_tgt:
             load_state_model(self.model_tgt, self.state_tgt["model"])
         else:
-
-            load_state_model(self.model_src, self.state_src)
             load_state_model(self.model_tgt, self.state_tgt)
         self.model_src = DistModule(self.model_src, self.config.dist.sync)
         self.model_tgt = DistModule(self.model_tgt, self.config.dist.sync)
 
-
     def build_data(self):
-        # self.config.data.last_iter = self.state_tgt["last_iter"]
-        self.config.data.last_iter = 0
+        self.config.data.last_iter = self.state_tgt["last_iter"]
         if getattr(self.config.lr_scheduler.kwargs, "max_iter", False):
             self.config.data.max_iter = self.config.lr_scheduler.kwargs.max_iter
         else:
@@ -201,7 +198,7 @@ class ClsSolver(BaseSolver):
         if attack == 'autoattack_linf' or attack == 'mim_linf' or attack == 'pgd_l1':
             attack_gen = AddNoise(attack)
             attack_gen.set_config(model=self.model_src, eps=eps)
-        elif attack!='none':
+        else:
             f_model = fb.PyTorchModel(
                 self.model_src, bounds=(0, 1), device=device, preprocessing=preprocessing
             )
@@ -292,7 +289,7 @@ def main():
         ]
     # build solver
     prefix = (
-        args.tgt_name+"_"+args.attack + "_" + str(eval(args.eps))[0 : min(5, len(str(eval(args.eps))))]
+        args.src_name+"to"+args.tgt_name+"_"+args.attack + "_" + str(eval(args.eps))[0 : min(5, len(str(eval(args.eps))))]
     )
     solver = ClsSolver(config, prefix)
     # solver.evaluate(attack='none', eps=0)

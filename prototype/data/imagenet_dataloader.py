@@ -167,13 +167,18 @@ def build_imagenet_train_dataloader(cfg_dataset, data_type="train"):
         )
     else:
         # PyTorch dataloader
+        num_workers = cfg_dataset["num_workers"]
+        prefetch_factor = cfg_dataset.get("prefetch_factor", 2)
+        persistent_workers = cfg_dataset.get("persistent_workers", True)
         loader = DataLoader(
             dataset=dataset,
             batch_size=cfg_dataset["batch_size"],
             shuffle=False,
-            num_workers=cfg_dataset["num_workers"],
+            num_workers=num_workers,
             pin_memory=True,
             sampler=sampler,
+            prefetch_factor=prefetch_factor if num_workers > 0 else None,
+            persistent_workers=persistent_workers if num_workers > 0 else False,
         )
     return {"type": "train", "loader": loader}
 
@@ -244,6 +249,21 @@ def build_imagenet_test_dataloader(cfg_dataset, data_type="test"):
                 evaluator=evaluator,
                 image_reader_type=image_reader.get("type", "pil"),
             )
+
+    # Limit dataset size if specified in config (for ImageNet-S quick testing)
+    # Only apply to single dataset cases (not imagenet_a&o)
+    if not cfg_test.get("imagenet_a&o", False) and cfg_test.get("limit_samples", None) is not None:
+        limit_samples = cfg_test["limit_samples"]
+        if limit_samples > 0 and limit_samples < len(dataset):
+            from torch.utils.data import Subset
+            import random
+            # Use fixed random seed for reproducibility
+            random.seed(42)
+            indices = list(range(len(dataset)))
+            random.shuffle(indices)
+            indices = indices[:limit_samples]
+            dataset = Subset(dataset, indices)
+
     # build sampler
 
     assert cfg_test["sampler"].get("type", "distributed") == "distributed"
@@ -286,29 +306,38 @@ def build_imagenet_test_dataloader(cfg_dataset, data_type="test"):
         cfg_dataset["dataset"] = dataset_o
         sampler_dataset_o = build_sampler(cfg_test["sampler"], cfg_dataset)
 
+        num_workers = cfg_dataset["num_workers"]
+        prefetch_factor = cfg_dataset.get("prefetch_factor", 2)
+        persistent_workers = cfg_dataset.get("persistent_workers", True)
         val_loader_imagenet_o = DataLoader(
             dataset=dataset_val_loader_imagenet_o,
             batch_size=cfg_dataset["batch_size"],
             shuffle=False,
-            num_workers=cfg_dataset["num_workers"],
+            num_workers=num_workers,
             pin_memory=cfg_dataset["pin_memory"],
             sampler=sampler_dataset_val_loader_imagenet_o,
+            prefetch_factor=prefetch_factor if num_workers > 0 else None,
+            persistent_workers=persistent_workers if num_workers > 0 else False,
         )
         loader_a = DataLoader(
             dataset=dataset_a,
             batch_size=cfg_dataset["batch_size"],
             shuffle=False,
-            num_workers=cfg_dataset["num_workers"],
+            num_workers=num_workers,
             pin_memory=cfg_dataset["pin_memory"],
             sampler=sampler_dataset_a,
+            prefetch_factor=prefetch_factor if num_workers > 0 else None,
+            persistent_workers=persistent_workers if num_workers > 0 else False,
         )
         loader_o = DataLoader(
             dataset=dataset_o,
             batch_size=cfg_dataset["batch_size"],
             shuffle=False,
-            num_workers=cfg_dataset["num_workers"],
+            num_workers=num_workers,
             pin_memory=cfg_dataset["pin_memory"],
             sampler=sampler_dataset_o,
+            prefetch_factor=prefetch_factor if num_workers > 0 else None,
+            persistent_workers=persistent_workers if num_workers > 0 else False,
         )
         return {
             "type": "test",
@@ -318,13 +347,18 @@ def build_imagenet_test_dataloader(cfg_dataset, data_type="test"):
         }
     else:
         # PyTorch dataloader
+        num_workers = cfg_dataset["num_workers"]
+        prefetch_factor = cfg_dataset.get("prefetch_factor", 2)
+        persistent_workers = cfg_dataset.get("persistent_workers", True)
         loader = DataLoader(
             dataset=dataset,
             batch_size=cfg_dataset["batch_size"],
             shuffle=False,
-            num_workers=cfg_dataset["num_workers"],
+            num_workers=num_workers,
             pin_memory=cfg_dataset["pin_memory"],
             sampler=sampler,
+            prefetch_factor=prefetch_factor if num_workers > 0 else None,
+            persistent_workers=persistent_workers if num_workers > 0 else False,
         )
     return {"type": "test", "loader": loader}
 

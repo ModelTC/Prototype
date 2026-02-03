@@ -241,4 +241,48 @@ model_name_dict = {
         "type": "wide_resnet101_2",
         "kwargs": {"bn": {"use_sync_bn": False, "kwargs": {}}},
     },
+    "convnextv2_base":{
+        "type": "convnextv2_base",
+        "kwargs":{"num_classes": 1000,
+        "drop_path_rate": 0.0}
+    },
+    "convnext_base":{
+        "type": "convnext_base",
+        "kwargs":{"num_classes": 1000,
+        "drop_path_rate": 0.0}
+    },
+    "convnext_base_cvst":{
+        "type": "convnext_base_cvst",
+        "kwargs":{"num_classes": 1000,
+        "drop_path_rate": 0.0}
+    },
+    "vit_base":{
+        "type": "vit_base",
+        "kwargs":{"num_classes": 1000,
+        "drop_path_rate": 0.0}
+    },
+    "vit_base_cvst":{
+        "type": "vit_base_cvst",
+        "kwargs":{"num_classes": 1000,
+        "drop_path_rate": 0.0}
+    },
+    "clip_vit_l_14":{
+        "type": "clip_vit_l_14",
+        "kwargs":{"num_classes": 1000,
+        "pretrained": 'openai',
+        "use_pretrain_path":True,
+        'checkpoint_path':'/mnt/afs_1/huangyushi/RobustART/models/ViT-L-14.pt'}
+    },
+    "clip_vit_l_14_fare2_clip":{
+        "type": "clip_vit_l_14_fare2_clip",
+        "kwargs":{"num_classes": 1000,
+        "pretrained": 'fare2_clip',
+        "use_pretrain_path":True}
+    },
+    "clip_vit_l_14_tecoa2_clip":{
+        "type": "clip_vit_l_14_tecoa2_clip",
+        "kwargs":{"num_classes": 1000,
+        "pretrained": 'tecoa2-clip',
+        "use_pretrain_path":True}
+    }
 }

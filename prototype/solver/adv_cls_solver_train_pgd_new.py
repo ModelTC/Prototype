@@ -46,6 +46,8 @@ import foolbox as fb
 import numpy as np
 
 
+
+
 def normalize(x, mode="normal", typ=False):
     device=x.device
     mean = torch.tensor(np.array([0.485, 0.456, 0.406]), dtype=x.dtype)[
@@ -61,6 +63,47 @@ def normalize(x, mode="normal", typ=False):
         return (x - mean) / var
     elif mode == "inv":
         return x * var + mean
+    
+def pgd_linf_attack(
+    model,
+    x,
+    y,
+    eps=4/255,
+    alpha=1/255,
+    steps=7,
+    random_start=True,
+):
+    """
+    x: normalized input (N, C, H, W), in [0,1] normalized space
+    y: labels
+    """
+    device = x.device
+    x_orig = x.detach()
+
+    if random_start:
+        x_adv = x_orig + torch.empty_like(x_orig).uniform_(-eps, eps)
+        x_adv = torch.clamp(x_adv, 0.0, 1.0)
+    else:
+        x_adv = x_orig.clone()
+
+    for _ in range(steps):
+        x_adv.requires_grad_(True)
+
+        with torch.enable_grad():
+            logits = model(x_adv)
+            loss = F.cross_entropy(logits, y)
+
+        grad = torch.autograd.grad(loss, x_adv)[0]
+
+        x_adv = x_adv.detach() + alpha * grad.sign()
+        x_adv = torch.max(
+            torch.min(x_adv, x_orig + eps),
+            x_orig - eps,
+        )
+        x_adv = torch.clamp(x_adv, 0.0, 1.0)
+
+    return x_adv.detach()
+
 
 
 class ClsSolver(BaseSolver):
@@ -106,6 +149,7 @@ class ClsSolver(BaseSolver):
             )
             if hasattr(self.config.saver.pretrain, "ignore"):
                 self.state = modify_state(self.state, self.config.saver.pretrain.ignore)
+            self.state["last_iter"] = 0
         else:
             self.state = {}
             self.state["last_iter"] = 0
@@ -171,10 +215,13 @@ class ClsSolver(BaseSolver):
             link.fp16.init()
             self.model.half()
 
-        self.model = DistModule(self.model, self.config.dist.sync)
+        
 
         if "model" in self.state:
             load_state_model(self.model, self.state["model"])
+        else:
+            load_state_model(self.model, self.state)
+        self.model = DistModule(self.model, self.config.dist.sync)
 
     def build_optimizer(self):
 
@@ -314,14 +361,26 @@ class ClsSolver(BaseSolver):
                 input, target_a, target_b, lam = cutmix_data(input, target, self.cutmix)
             # gen adv examples
             self.model.eval()
-            adv_input_01 = normalize(input, "inv", self.fp16)
-            pgdlinf_att = fb.attacks.LinfProjectedGradientDescentAttack(
-                rel_stepsize=1 / 15, steps=20
+
+            # 1. 反归一化到 [0,1]
+            adv_input_01 = normalize(input, mode="inv", typ=self.fp16)
+
+            # 2. Torch PGD（训练级参数）
+            with torch.no_grad():
+                adv_input_01 = adv_input_01.clamp(0.0, 1.0)
+            adv_input_01 = pgd_linf_attack(
+                model=self.model,
+                x=adv_input_01,
+                y=target,
+                eps=4/255,
+                alpha=1/255,
+                steps=20,         
+                random_start=True
             )
-            adv_fbpgd_linf, _, success = pgdlinf_att(
-                f_model, adv_input_01, target, epsilons=4 / 255
-            )
-            adv_input = normalize(adv_fbpgd_linf.to(input.device), typ=self.fp16)
+
+            # 3. 再 normalize 回模型输入分布
+            adv_input = normalize(adv_input_01, typ=self.fp16)
+
             # adv_input = normalize(adv_fbpgd_linf.cuda(), typ=self.fp16)
             input = torch.cat([input, adv_input], 0)
             target = torch.cat([target, target], 0)
@@ -384,37 +443,37 @@ class ClsSolver(BaseSolver):
 
             # testing during training
             if curr_step > 0 and curr_step % self.config.saver.val_freq == 0:
-                metrics = self.evaluate()
-                if self.ema is not None:
-                    self.ema.load_ema(self.model)
-                    ema_metrics = self.evaluate()
-                    self.ema.recover(self.model)
-                    if (
-                        self.dist.rank == 0
-                        and self.config.data.test.evaluator.type == "imagenet"
-                    ):
-                        metric_key = "top{}".format(self.topk)
-                        self.tb_logger.add_scalars(
-                            "acc1_val", {"ema": ema_metrics.metric["top1"]}, curr_step
-                        )
-                        self.tb_logger.add_scalars(
-                            "acc5_val",
-                            {"ema": ema_metrics.metric[metric_key]},
-                            curr_step,
-                        )
+                # metrics = self.evaluate()
+                # if self.ema is not None:
+                #     self.ema.load_ema(self.model)
+                #     ema_metrics = self.evaluate()
+                #     self.ema.recover(self.model)
+                #     if (
+                #         self.dist.rank == 0
+                #         and self.config.data.test.evaluator.type == "imagenet"
+                #     ):
+                #         metric_key = "top{}".format(self.topk)
+                #         self.tb_logger.add_scalars(
+                #             "acc1_val", {"ema": ema_metrics.metric["top1"]}, curr_step
+                #         )
+                #         self.tb_logger.add_scalars(
+                #             "acc5_val",
+                #             {"ema": ema_metrics.metric[metric_key]},
+                #             curr_step,
+                #         )
 
-                # testing logger
-                if (
-                    self.dist.rank == 0
-                    and self.config.data.test.evaluator.type == "imagenet"
-                ):
-                    metric_key = "top{}".format(self.topk)
-                    self.tb_logger.add_scalar(
-                        "acc1_val", metrics.metric["top1"], curr_step
-                    )
-                    self.tb_logger.add_scalar(
-                        "acc5_val", metrics.metric[metric_key], curr_step
-                    )
+                # # testing logger
+                # if (
+                #     self.dist.rank == 0
+                #     and self.config.data.test.evaluator.type == "imagenet"
+                # ):
+                #     metric_key = "top{}".format(self.topk)
+                #     self.tb_logger.add_scalar(
+                #         "acc1_val", metrics.metric["top1"], curr_step
+                #     )
+                #     self.tb_logger.add_scalar(
+                #         "acc5_val", metrics.metric[metric_key], curr_step
+                #     )
 
                 # save ckpt
                 if self.dist.rank == 0:

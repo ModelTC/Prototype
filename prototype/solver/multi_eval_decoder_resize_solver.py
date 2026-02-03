@@ -1,5 +1,8 @@
 import os
 import argparse
+import sys
+import subprocess
+import numpy as np
 from easydict import EasyDict
 from tensorboardX import SummaryWriter
 import time
@@ -87,7 +90,13 @@ class MultiEvalSolver_S(BaseSolver):
 
         if model is not None:
             self.model = model
-            self.model.cuda()
+            # Move model to the correct GPU for this rank
+            device_id = self.dist.rank % torch.cuda.device_count()
+            torch.cuda.set_device(device_id)
+            self.model.cuda(device=device_id)
+            # Wrap with DistModule for distributed support
+            if not isinstance(self.model, DistModule):
+                self.model = DistModule(self.model, self.config.dist.sync)
         else:
             self.build_model()
         # self.build_optimizer()
@@ -123,10 +132,10 @@ class MultiEvalSolver_S(BaseSolver):
             self.logger.info(f"hostnames: {os.environ['SLURM_NODELIST']}")
         # load pretrain checkpoint
         if hasattr(self.config.saver, "pretrain"):
-            self.state = torch.load(self.config.saver.pretrain.path, "cpu")
-            self.logger.info(
-                f"Recovering from {self.config.saver.pretrain.path}, keys={list(self.state.keys())}"
-            )
+            self.state = torch.load(self.config.saver.pretrain.path, "cpu", weights_only=False)
+            # self.logger.info(
+            #    f"Recovering from {self.config.saver.pretrain.path}, keys={list(self.state.keys())}"
+            # )
             if hasattr(self.config.saver.pretrain, "ignore"):
                 from prototype.prototype.utils.misc import modify_state
 
@@ -152,20 +161,24 @@ class MultiEvalSolver_S(BaseSolver):
                     )
                 )
 
-        self.model = model_entry(self.config.model)
+        self.model = model_entry(self.config.model, full_config=self.config)
         self.prototype_info.model = self.config.model.type
-        self.model.cuda()
+        # Move model to the correct GPU for this rank
+        device_id = self.dist.rank % torch.cuda.device_count()
+        torch.cuda.set_device(device_id)
+        self.model.cuda(device=device_id)
 
-        count_params(self.model)
-        count_flops(
-            self.model,
-            input_shape=[
-                1,
-                3,
-                self.config.data.input_size,
-                self.config.data.input_size,
-            ],
-        )
+        if self.dist.rank == 0:
+            count_params(self.model)
+            count_flops(
+                self.model,
+                input_shape=[
+                    1,
+                    3,
+                    self.config.data.input_size,
+                    self.config.data.input_size,
+                ],
+            )
 
         # handle fp16
         if (
@@ -215,6 +228,9 @@ class MultiEvalSolver_S(BaseSolver):
             # Load state dict into unwrapped model
             self.model.load_state_dict(model_state, strict=False)
 
+        # Synchronize all ranks before wrapping with DistModule
+        if self.dist.world_size > 1:
+            link.barrier()
         self.model = DistModule(self.model, self.config.dist.sync)
 
     def build_optimizer(self):
@@ -465,6 +481,9 @@ class MultiEvalSolver_S(BaseSolver):
     @torch.no_grad()
     def evaluate(self):
         self.model.eval()
+        # Ensure all ranks are synchronized before evaluation
+        if self.dist.world_size > 1:
+            link.barrier()
         imagenetc_flag = self.config.data.test.get("imagenet_c", False)
         if imagenetc_flag:
 
@@ -520,8 +539,10 @@ class MultiEvalSolver_S(BaseSolver):
                 self.logger.info(info_str)
             input = batch["image"]
             label = batch["label"]
-            input = input.cuda()
-            label = label.squeeze().view(-1).cuda().long()
+            # Move data to the correct GPU for this rank
+            device_id = self.dist.rank % torch.cuda.device_count()
+            input = input.cuda(device=device_id)
+            label = label.squeeze().view(-1).cuda(device=device_id).long()
             # compute output
             logits = self.model(input)
             scores = F.softmax(logits, dim=1)
@@ -549,10 +570,12 @@ class MultiEvalSolver_S(BaseSolver):
             link.barrier()
             if self.dist.rank == 0:
                 self.val_data["loader"].dataset.merge_eval_res(self.path.result_path)
+                self._write_imagenet_c_mce()
             metrics = {}
         else:
             if self.dist.rank == 0:
                 metrics = self.val_data["loader"].dataset.evaluate(res_file)
+                # Don't write acc_var_neg here - will be computed globally after all methods
                 self.logger.info(json.dumps(metrics.metric, indent=2))
             else:
                 metrics = {}
@@ -563,6 +586,67 @@ class MultiEvalSolver_S(BaseSolver):
         # self.model.train()
         self.logger.info(f"{self.prefix_name} done.")
         return metrics
+
+    def _write_acc_var_neg(self, res_file):
+        """
+        Compute variance of per-sample accuracy (0/1) and write its negative value.
+        """
+        prefix = res_file.rstrip("0123456789")
+        merged_file = prefix.rsplit(".", 1)[0] + ".all"
+        if not os.path.exists(merged_file):
+            merged_file = self.val_data["loader"].dataset.merge(prefix)
+
+        correct_list = []
+        with open(merged_file, "r") as f:
+            for line in f:
+                try:
+                    info = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if "prediction" not in info or "label" not in info:
+                    continue
+                correct_list.append(1.0 if info["prediction"] == info["label"] else 0.0)
+
+        if not correct_list:
+            self.logger.warning("[acc-var] No valid predictions found.")
+            return
+
+        acc_mean = float(np.mean(correct_list))
+        acc_var = float(np.var(correct_list))
+        out_path = os.path.join(self.path.result_path, "acc_var_neg.json")
+        with open(out_path, "w") as f:
+            json.dump(
+                {
+                    "acc_mean": acc_mean,
+                    "acc_var": acc_var,
+                    "acc_var_neg": -acc_var,
+                    "num_samples": len(correct_list),
+                },
+                f,
+                indent=2,
+            )
+        self.logger.info(f"[acc-var] saved to: {out_path}")
+
+    def _write_imagenet_c_mce(self):
+        """
+        Generate mCE summary JSON for ImageNet-C results if helper script exists.
+        """
+        script_path = os.path.join(self.path.root_path, "calculate_imagenet_c_mce.py")
+        if not os.path.exists(script_path):
+            self.logger.warning(
+                f"[imagenet-c] mCE script not found: {script_path}"
+            )
+            return
+        results_dir = os.path.join(self.path.root_path, self.prefix_name)
+        output_path = os.path.join(self.path.result_path, "mce.json")
+        try:
+            subprocess.run(
+                [sys.executable, script_path, results_dir, "--output", output_path],
+                check=False,
+            )
+            self.logger.info(f"[imagenet-c] mCE saved to: {output_path}")
+        except Exception as exc:
+            self.logger.warning(f"[imagenet-c] mCE calculation failed: {exc}")
 
 
 @link_dist
@@ -599,6 +683,7 @@ def main():
         }
         decoder_list = ["pil"]  # ["opencv", "kestrel"]
         for model_name in model_list[model_family]:
+            acc_list = []  # Collect acc values from all methods
             for mode in resize_mode:
                 for resize in resize_mode[mode]:
                     model = SPRING_MODELS_REGISTRY.get(model_name)(
@@ -610,18 +695,30 @@ def main():
                         task="classification",
                     )
                     tmp_config = deepcopy(config)
-                    tmp_config["data"]["test"]["transforms"][0]["kwargs"][
-                        "mode"
-                    ] = resize
-                    tmp_config["data"]["test"]["transforms"][0]["kwargs"][
-                        "backend"
-                    ] = mode
+                    transforms = tmp_config["data"]["test"]["transforms"]
+                    # Only update resize settings when transforms are list-based
+                    if (
+                        isinstance(transforms, list)
+                        and transforms
+                        and isinstance(transforms[0], dict)
+                        and "kwargs" in transforms[0]
+                    ):
+                        transforms[0]["kwargs"]["mode"] = resize
+                        transforms[0]["kwargs"]["backend"] = mode
+                    else:
+                        if link.get_rank() == 0:
+                            print(
+                                f"[multi_eval] Skip resize override for transforms type: {type(transforms)}"
+                            )
 
                     solver = MultiEvalSolver_S(
                         tmp_config, model, f"{model_name}/{mode}.{resize}"
                     )
                     # evaluate or train
-                    solver.evaluate()
+                    metrics = solver.evaluate()
+                    # Collect acc value if available
+                    if link.get_rank() == 0 and metrics and hasattr(metrics, "metric") and "top1" in metrics.metric:
+                        acc_list.append(float(metrics.metric["top1"]))
                     status.write(f"{model_name}.{mode}.{resize} done\n")
 
             for decoder in decoder_list:
@@ -637,8 +734,34 @@ def main():
                 tmp_config["data"]["test"]["image_reader"]["type"] = decoder
                 solver = MultiEvalSolver_S(tmp_config, model, f"{model_name}/{decoder}")
                 # evaluate or train
-                solver.evaluate()
+                metrics = solver.evaluate()
+                # Collect acc value if available
+                if link.get_rank() == 0 and metrics and hasattr(metrics, "metric") and "top1" in metrics.metric:
+                    acc_list.append(float(metrics.metric["top1"]))
                 status.write(f"{model_name}.{decoder} done\n")
+
+            # Compute global acc variance after all methods are evaluated
+            if link.get_rank() == 0 and acc_list and config.data.test.get("save_acc_var_neg", False):
+                acc_array = np.array(acc_list)
+                acc_mean = float(np.mean(acc_array))
+                acc_var = float(np.var(acc_array))
+                # Save to model's main directory (e.g., clip_vit_l_14_fare2_clip/)
+                model_result_path = os.path.join(os.getcwd(), model_name, "acc_var_neg.json")
+                os.makedirs(os.path.dirname(model_result_path), exist_ok=True)
+                with open(model_result_path, "w") as f:
+                    json.dump(
+                        {
+                            "acc_mean": acc_mean,
+                            "acc_var": acc_var,
+                            "acc_var_neg": -acc_var,
+                            "num_methods": len(acc_list),
+                            "acc_list": acc_list,
+                        },
+                        f,
+                        indent=2,
+                    )
+                print(f"[acc-var] Global acc variance saved to: {model_result_path}")
+                status.write(f"[acc-var] Global acc variance: {acc_var}, neg: {-acc_var}\n")
     else:
         # Single model evaluation mode - load from saver config
         resize_mode = {
@@ -648,16 +771,32 @@ def main():
         decoder_list = ["pil"]  # ["opencv", "kestrel"]
 
         # Test different resize modes
+        acc_list = []  # Collect acc values from all methods
         for mode in resize_mode:
             for resize in resize_mode[mode]:
                 tmp_config = deepcopy(config)
-                tmp_config["data"]["test"]["transforms"][0]["kwargs"]["mode"] = resize
-                tmp_config["data"]["test"]["transforms"][0]["kwargs"]["backend"] = mode
+                transforms = tmp_config["data"]["test"]["transforms"]
+                if (
+                    isinstance(transforms, list)
+                    and transforms
+                    and isinstance(transforms[0], dict)
+                    and "kwargs" in transforms[0]
+                ):
+                    transforms[0]["kwargs"]["mode"] = resize
+                    transforms[0]["kwargs"]["backend"] = mode
+                else:
+                    if link.get_rank() == 0:
+                        print(
+                            f"[multi_eval] Skip resize override for transforms type: {type(transforms)}"
+                        )
 
                 solver = MultiEvalSolver_S(
                     tmp_config, None, f"{config.model.type}/{mode}.{resize}"
                 )
-                solver.evaluate()
+                metrics = solver.evaluate()
+                # Collect acc value if available
+                if link.get_rank() == 0 and metrics and hasattr(metrics, "metric") and "top1" in metrics.metric:
+                    acc_list.append(float(metrics.metric["top1"]))
                 status.write(f"{config.model.type}/{mode}.{resize} done\n")
 
         # Test different decoders
@@ -667,8 +806,34 @@ def main():
             solver = MultiEvalSolver_S(
                 tmp_config, None, f"{config.model.type}/{decoder}"
             )
-            solver.evaluate()
+            metrics = solver.evaluate()
+            # Collect acc value if available
+            if link.get_rank() == 0 and metrics and hasattr(metrics, "metric") and "top1" in metrics.metric:
+                acc_list.append(float(metrics.metric["top1"]))
             status.write(f"{config.model.type}/{decoder} done\n")
+        
+        # Compute global acc variance after all methods are evaluated
+        if link.get_rank() == 0 and acc_list and config.data.test.get("save_acc_var_neg", False):
+            acc_array = np.array(acc_list)
+            acc_mean = float(np.mean(acc_array))
+            acc_var = float(np.var(acc_array))
+            # Save to model's main directory (e.g., clip_vit_l_14_fare2_clip/)
+            model_result_path = os.path.join(os.getcwd(), config.model.type, "acc_var_neg.json")
+            os.makedirs(os.path.dirname(model_result_path), exist_ok=True)
+            with open(model_result_path, "w") as f:
+                json.dump(
+                    {
+                        "acc_mean": acc_mean,
+                        "acc_var": acc_var,
+                        "acc_var_neg": -acc_var,
+                        "num_methods": len(acc_list),
+                        "acc_list": acc_list,
+                    },
+                    f,
+                    indent=2,
+                )
+            print(f"[acc-var] Global acc variance saved to: {model_result_path}")
+            status.write(f"[acc-var] Global acc variance: {acc_var}, neg: {-acc_var}\n")
 
     status.close()
 

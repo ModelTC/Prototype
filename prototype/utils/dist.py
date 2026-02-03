@@ -18,7 +18,14 @@ def link_dist(func):
     return wrapper
 
 
-def dist_init(method="single_node", device_id=0, skip_dist=False):
+def dist_init(method="single_node", device_id=None, skip_dist=False):
+    if device_id is None:
+        if "LOCAL_RANK" in os.environ:
+            device_id = int(os.environ["LOCAL_RANK"])
+        elif "RANK" in os.environ:
+            device_id = int(os.environ["RANK"]) % max(torch.cuda.device_count(), 1)
+        else:
+            device_id = 0
     if skip_dist or os.environ.get("SKIP_DIST", "0") == "1":
         # Single GPU mode: skip distributed initialization
         torch.cuda.set_device(device_id)

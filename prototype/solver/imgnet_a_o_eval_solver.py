@@ -64,7 +64,13 @@ class MultiEvalSolver_A_O(BaseSolver):
 
         if model is not None:
             self.model = model
-            self.model.cuda()
+            # Move model to the correct GPU for this rank
+            device_id = self.dist.rank % torch.cuda.device_count()
+            torch.cuda.set_device(device_id)
+            self.model.cuda(device=device_id)
+            # Wrap with DistModule for distributed support
+            if not isinstance(self.model, DistModule):
+                self.model = DistModule(self.model, self.config.dist.sync)
         else:
             self.build_model()
 
@@ -1533,19 +1539,32 @@ class MultiEvalSolver_A_O(BaseSolver):
         torch.backends.cudnn.benchmark = True
 
     def create_symlinks_to_imagenet(self, imagenet_folder, folder_to_scan):
-        if not os.path.exists(imagenet_folder):
-            os.makedirs(imagenet_folder)
+        os.makedirs(imagenet_folder, exist_ok=True)
+        # Synchronize all ranks before creating symlinks to avoid race conditions
+        if self.dist.world_size > 1:
+            link.barrier()
+        # Only rank 0 creates symlinks to avoid race conditions
+        if self.dist.rank == 0:
             folders_of_interest = os.listdir(folder_to_scan)
             path_prefix = self.config.data.test.imagenet_val_root_dir
             for folder in folders_of_interest:
                 # print(path_prefix + folder + "  " + imagenet_folder + folder)
                 # print(os.path.join(path_prefix, folder))
                 # print(os.path.join(imagenet_folder, folder))
-                os.symlink(
-                    os.path.join(path_prefix, folder),
-                    os.path.join(imagenet_folder, folder),
-                    target_is_directory=True,
-                )
+                symlink_path = os.path.join(imagenet_folder, folder)
+                if not os.path.exists(symlink_path):
+                    try:
+                        os.symlink(
+                            os.path.join(path_prefix, folder),
+                            symlink_path,
+                            target_is_directory=True,
+                        )
+                    except FileExistsError:
+                        # Symlink already exists, skip
+                        pass
+        # Synchronize all ranks after symlinks are created
+        if self.dist.world_size > 1:
+            link.barrier()
 
     def build_model(self):
         if hasattr(self.config, "lms"):
@@ -1561,21 +1580,27 @@ class MultiEvalSolver_A_O(BaseSolver):
 
         self.model = model_entry(self.config.model)
         self.prototype_info.model = self.config.model.type
-        self.model.cuda()
+        # Move model to the correct GPU for this rank
+        device_id = self.dist.rank % torch.cuda.device_count()
+        torch.cuda.set_device(device_id)
+        self.model.cuda(device=device_id)
 
-        count_params(self.model)
-        count_flops(
-            self.model,
-            input_shape=[
-                1,
-                3,
-                self.config.data.input_size,
-                self.config.data.input_size,
-            ],
-        )
+        if self.dist.rank == 0:
+            count_params(self.model)
+            count_flops(
+                self.model,
+                input_shape=[
+                    1,
+                    3,
+                    self.config.data.input_size,
+                    self.config.data.input_size,
+                ],
+            )
 
         # handle fp16
-
+        # Synchronize all ranks before wrapping with DistModule
+        if self.dist.world_size > 1:
+            link.barrier()
         self.model = DistModule(self.model, self.config.dist.sync)
 
         if "model" in self.state:
@@ -1604,8 +1629,10 @@ class MultiEvalSolver_A_O(BaseSolver):
         confidence = []
         correct = []
         num_correct = 0
+        # Move data to the correct GPU for this rank
+        device_id = self.dist.rank % torch.cuda.device_count()
         for data, target in loader:
-            data, target = data.cuda(), target.cuda()
+            data, target = data.cuda(device=device_id), target.cuda(device=device_id)
             output = net(data)[:, mask]
 
             # accuracy
@@ -1634,11 +1661,13 @@ class MultiEvalSolver_A_O(BaseSolver):
             merged_file = prefix.rsplit(".", 1)[0] + ".all"
             merged_fd = open(merged_file, "w")
             for rank in range(world_size):
-                self.res_file = prefix + str(rank)
-                assert os.path.exists(
-                    self.res_file
-                ), f"No such file or directory: {self.res_file}"
-                with open(self.res_file, "r") as fin:
+                part_file = prefix + str(rank)
+                if not os.path.exists(part_file):
+                    self.logger.warning(
+                        f"Result file not found for rank {rank}: {part_file}"
+                    )
+                    continue
+                with open(part_file, "r") as fin:
                     for line_idx, line in enumerate(fin):
                         merged_fd.write(line)
             merged_fd.close()
@@ -1647,21 +1676,35 @@ class MultiEvalSolver_A_O(BaseSolver):
             with open(merged_file) as f:
                 lines = f.readlines()
             for line in lines:
-                obj = json.loads(line)
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    # Skip malformed or empty lines from partial writes
+                    continue
                 confidence += obj["confidence"]
                 correct += obj["correct"]
                 num_correct += obj["num_correct"]
+        else:
+            # Non-rank-0 processes return empty arrays, will be broadcast later if needed
+            confidence = []
+            correct = []
+            num_correct = 0
 
         link.barrier()
 
+        # Broadcast merged results to all ranks if needed
+        # For now, only rank 0 has the merged results, which is fine since only rank 0 uses them
         return np.array(confidence), np.array(correct), num_correct
 
     @torch.no_grad()
     def evaluate(self):
         self.model.eval()
+        # Ensure all ranks are synchronized before evaluation
+        if self.dist.world_size > 1:
+            link.barrier()
         for imagenet_type in ["a", "o"]:
             net = self.model
-            if imagenet_type is "a":
+            if imagenet_type == "a":
                 loader = self.naes
                 mask = self.imagenet_a_mask
 

@@ -29,11 +29,16 @@ def stable_cumsum(arr, rtol=1e-05, atol=1e-08):
 
 def calib_err(confidence, correct, p="2", beta=100):
     # beta is target bin size
+    if len(confidence) == 0:
+        return 0.0
     idxs = np.argsort(confidence)
     confidence = confidence[idxs]
     correct = correct[idxs]
     bins = [[i * beta, (i + 1) * beta] for i in range(len(confidence) // beta)]
-    bins[-1] = [bins[-1][0], len(confidence)]
+    if not bins:
+        bins = [[0, len(confidence)]]
+    else:
+        bins[-1] = [bins[-1][0], len(confidence)]
 
     cerr = 0
     total_examples = len(confidence)

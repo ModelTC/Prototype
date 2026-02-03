@@ -60,9 +60,15 @@ class MultiEvalSolver(BaseSolver):
         self.prototype_info = EasyDict()
         self.prefix_name = prefix_name
         self.config = config
-        self.model = model
-        self.model.cuda()
         self.setup_env()
+        self.model = model
+        # Move model to the correct GPU for this rank
+        device_id = self.dist.rank % torch.cuda.device_count()
+        torch.cuda.set_device(device_id)
+        self.model.cuda(device=device_id)
+        # Wrap with DistModule for distributed support
+        if not isinstance(self.model, DistModule):
+            self.model = DistModule(self.model, self.config.dist.sync)
         # self.build_model()
         # self.build_optimizer()
         self.build_data()
@@ -115,18 +121,22 @@ class MultiEvalSolver(BaseSolver):
 
         self.model = model_entry(self.config.model, full_config=self.config)
         self.prototype_info.model = self.config.model.type
-        self.model.cuda()
+        # Move model to the correct GPU for this rank
+        device_id = self.dist.rank % torch.cuda.device_count()
+        torch.cuda.set_device(device_id)
+        self.model.cuda(device=device_id)
 
-        count_params(self.model)
-        count_flops(
-            self.model,
-            input_shape=[
-                1,
-                3,
-                self.config.data.input_size,
-                self.config.data.input_size,
-            ],
-        )
+        if self.dist.rank == 0:
+            count_params(self.model)
+            count_flops(
+                self.model,
+                input_shape=[
+                    1,
+                    3,
+                    self.config.data.input_size,
+                    self.config.data.input_size,
+                ],
+            )
 
         # handle fp16
         if (
@@ -156,6 +166,9 @@ class MultiEvalSolver(BaseSolver):
             link.fp16.init()
             self.model.half()
 
+        # Synchronize all ranks before wrapping with DistModule
+        if self.dist.world_size > 1:
+            link.barrier()
         self.model = DistModule(self.model, self.config.dist.sync)
 
         if "model" in self.state:
@@ -413,6 +426,9 @@ class MultiEvalSolver(BaseSolver):
     @torch.no_grad()
     def evaluate(self):
         self.model.eval()
+        # Ensure all ranks are synchronized before evaluation
+        if self.dist.world_size > 1:
+            link.barrier()
         imagenetc_flag = self.config.data.test.get("imagenet_c", False)
         if imagenetc_flag:
 
@@ -468,8 +484,10 @@ class MultiEvalSolver(BaseSolver):
                 self.logger.info(info_str)
             input = batch["image"]
             label = batch["label"]
-            input = input.cuda()
-            label = label.squeeze().view(-1).cuda().long()
+            # Move data to the correct GPU for this rank
+            device_id = self.dist.rank % torch.cuda.device_count()
+            input = input.cuda(device=device_id)
+            label = label.squeeze().view(-1).cuda(device=device_id).long()
             # compute output
             logits = self.model(input)
             scores = F.softmax(logits, dim=1)
@@ -501,7 +519,7 @@ class MultiEvalSolver(BaseSolver):
         else:
             if self.dist.rank == 0:
                 metrics = self.val_data["loader"].dataset.evaluate(res_file)
-                self.logger.info(json.dumps(metrics.metric, indent=2))
+                # self.logger.info(json.dumps(metrics.metric, indent=2))
             else:
                 metrics = {}
         link.barrier()
