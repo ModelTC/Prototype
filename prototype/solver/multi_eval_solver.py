@@ -1,9 +1,7 @@
-# solver code for PGD-Linf adversarial training
 import os
 import argparse
 from easydict import EasyDict
 from tensorboardX import SummaryWriter
-import pprint
 import time
 import datetime
 import torch
@@ -27,13 +25,14 @@ from prototype.prototype.utils.misc import (
     load_state_optimizer,
     mixup_data,
     mix_criterion,
-    modify_state,
     cutmix_data,
     parse_config,
 )
 from prototype.prototype.utils.ema import EMA
 from prototype.prototype.model import model_entry
-from prototype.prototype.optimizer import optim_entry
+from prototype.prototype.optimizer import (
+    optim_entry,
+)  # , FP16RMSprop, FP16SGD, FusedFP16SGD, FP16AdamW
 from prototype.prototype.lr_scheduler import scheduler_entry
 from prototype.prototype.data import (
     build_imagenet_train_dataloader,
@@ -42,38 +41,39 @@ from prototype.prototype.data import (
 from prototype.prototype.data import build_custom_dataloader
 from prototype.prototype.loss_functions import LabelSmoothCELoss
 
-import foolbox as fb
-import numpy as np
+# from prototype.prototype.utils.user_analysis_helper import send_info
+# from prototype.prototype.spring import SPRING_MODELS_REGISTRY
+from prototype.prototype.model import get_model_robust_dcit
+
+try:
+    from prototype.prototype.spring import SPRING_MODELS_REGISTRY
+except ImportError:
+    try:
+        from spring.models import SPRING_MODELS_REGISTRY
+    except ImportError:
+        SPRING_MODELS_REGISTRY = None
 
 
-def normalize(x, mode="normal", typ=False):
-    device=x.device
-    mean = torch.tensor(np.array([0.485, 0.456, 0.406]), dtype=x.dtype)[
-        np.newaxis, :, np.newaxis, np.newaxis
-    ].to(device)
-    var = torch.tensor(np.array([0.229, 0.224, 0.225]), dtype=x.dtype)[
-        np.newaxis, :, np.newaxis, np.newaxis
-    ].to(device)
-    if typ:
-        mean = mean.half()
-        var = var.half()
-    if mode == "normal":
-        return (x - mean) / var
-    elif mode == "inv":
-        return x * var + mean
+class MultiEvalSolver(BaseSolver):
 
-
-class ClsSolver(BaseSolver):
-
-    def __init__(self, config_file):
-        self.config_file = config_file
+    def __init__(self, config, model, prefix_name):
         self.prototype_info = EasyDict()
-        self.config = parse_config(config_file)
+        self.prefix_name = prefix_name
+        self.config = config
         self.setup_env()
-        self.build_model()
-        self.build_optimizer()
+        self.model = model
+        # Move model to the correct GPU for this rank
+        device_id = self.dist.rank % torch.cuda.device_count()
+        torch.cuda.set_device(device_id)
+        self.model.cuda(device=device_id)
+        # Wrap with DistModule for distributed support
+        if not isinstance(self.model, DistModule):
+            self.model = DistModule(self.model, self.config.dist.sync)
+        # self.build_model()
+        # self.build_optimizer()
         self.build_data()
-        self.build_lr_scheduler()
+        # self.build_lr_scheduler()
+        # send_info(self.prototype_info)
 
     def setup_env(self):
         # dist
@@ -82,10 +82,12 @@ class ClsSolver(BaseSolver):
         self.prototype_info.world_size = self.dist.world_size
         # directories
         self.path = EasyDict()
-        self.path.root_path = os.path.dirname(self.config_file)
+        self.path.root_path = os.getcwd()
         self.path.save_path = os.path.join(self.path.root_path, "checkpoints")
         self.path.event_path = os.path.join(self.path.root_path, "events")
-        self.path.result_path = os.path.join(self.path.root_path, "results")
+        self.path.result_path = os.path.join(
+            self.path.root_path, self.prefix_name, "results"
+        )
         makedir(self.path.save_path)
         makedir(self.path.event_path)
         makedir(self.path.result_path)
@@ -93,22 +95,15 @@ class ClsSolver(BaseSolver):
         if self.dist.rank == 0:
             self.tb_logger = SummaryWriter(self.path.event_path)
         # logger
-        create_logger(os.path.join(self.path.root_path, "log.txt"))
+        create_logger(os.path.join(self.path.root_path, self.prefix_name, "log.txt"))
         self.logger = get_logger(__name__)
-        self.logger.info(f"config: {pprint.pformat(self.config)}")
+        # self.logger.info(f'config: {pprint.pformat(self.config)}')
         if "SLURM_NODELIST" in os.environ:
             self.logger.info(f"hostnames: {os.environ['SLURM_NODELIST']}")
         # load pretrain checkpoint
-        if hasattr(self.config.saver, "pretrain"):
-            self.state = torch.load(self.config.saver.pretrain.path, "cpu")
-            self.logger.info(
-                f"Recovering from {self.config.saver.pretrain.path}, keys={list(self.state.keys())}"
-            )
-            if hasattr(self.config.saver.pretrain, "ignore"):
-                self.state = modify_state(self.state, self.config.saver.pretrain.ignore)
-        else:
-            self.state = {}
-            self.state["last_iter"] = 0
+
+        self.state = {}
+        self.state["last_iter"] = 0
         # others
         torch.backends.cudnn.benchmark = True
 
@@ -124,24 +119,24 @@ class ClsSolver(BaseSolver):
                     )
                 )
 
-        self.model = model_entry(self.config.model)
+        self.model = model_entry(self.config.model, full_config=self.config)
         self.prototype_info.model = self.config.model.type
-        # self.model.cuda()
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        device = torch.device(f"cuda:{local_rank}")
-        self.model.to(device)
+        # Move model to the correct GPU for this rank
+        device_id = self.dist.rank % torch.cuda.device_count()
+        torch.cuda.set_device(device_id)
+        self.model.cuda(device=device_id)
 
-
-        count_params(self.model)
-        count_flops(
-            self.model,
-            input_shape=[
-                1,
-                3,
-                self.config.data.input_size,
-                self.config.data.input_size,
-            ],
-        )
+        if self.dist.rank == 0:
+            count_params(self.model)
+            count_flops(
+                self.model,
+                input_shape=[
+                    1,
+                    3,
+                    self.config.data.input_size,
+                    self.config.data.input_size,
+                ],
+            )
 
         # handle fp16
         if (
@@ -171,6 +166,9 @@ class ClsSolver(BaseSolver):
             link.fp16.init()
             self.model.half()
 
+        # Synchronize all ranks before wrapping with DistModule
+        if self.dist.world_size > 1:
+            link.barrier()
         self.model = DistModule(self.model, self.config.dist.sync)
 
         if "model" in self.state:
@@ -217,7 +215,13 @@ class ClsSolver(BaseSolver):
         self.prototype_info.lr_scheduler = self.config.lr_scheduler.type
         if not getattr(self.config.lr_scheduler.kwargs, "max_iter", False):
             self.config.lr_scheduler.kwargs.max_iter = self.config.data.max_iter
-        self.config.lr_scheduler.kwargs.optimizer = self.optimizer
+        self.config.lr_scheduler.kwargs.optimizer = (
+            self.optimizer.optimizer
+            if isinstance(self.optimizer, FP16SGD)
+            or isinstance(self.optimizer, FP16RMSprop)
+            or isinstance(self.optimizer, FP16AdamW)
+            else self.optimizer
+        )
         self.config.lr_scheduler.kwargs.last_iter = self.state["last_iter"]
         self.lr_scheduler = scheduler_entry(self.config.lr_scheduler)
 
@@ -274,18 +278,8 @@ class ClsSolver(BaseSolver):
             )
 
     def train(self):
+
         self.pre_train()
-        preprocessing = dict(
-            mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225], axis=-3
-        )
-        self.model.eval()
-        f_model = fb.PyTorchModel(
-            self.model,
-            bounds=(0, 1),
-            # device="cuda:" + str(int(self.dist.rank % 8)),
-            device=next(self.model.parameters()).device,
-            preprocessing=preprocessing,
-        )
         total_step = len(self.train_data["loader"])
         start_step = self.state["last_iter"] + 1
         end = time.time()
@@ -299,33 +293,14 @@ class ClsSolver(BaseSolver):
             # measure data loading time
             self.meters.data_time.update(time.time() - end)
             # transfer input to gpu
-            device = next(self.model.parameters()).device
-
-            target = target.squeeze().to(device).long()
-            input = input.to(device).half() if self.fp16 else input.to(device)
-
-            # target = target.squeeze().cuda().long()
-            # input = input.cuda().half() if self.fp16 else input.cuda()
+            target = target.squeeze().cuda().long()
+            input = input.cuda().half() if self.fp16 else input.cuda()
             # mixup
             if self.mixup < 1.0 and random.uniform(0, 1) > self.switch_prob:
                 input, target_a, target_b, lam = mixup_data(input, target, self.mixup)
             # cutmix
             elif self.cutmix > 0.0:
                 input, target_a, target_b, lam = cutmix_data(input, target, self.cutmix)
-            # gen adv examples
-            self.model.eval()
-            adv_input_01 = normalize(input, "inv", self.fp16)
-            pgdlinf_att = fb.attacks.LinfProjectedGradientDescentAttack(
-                rel_stepsize=1 / 15, steps=20
-            )
-            adv_fbpgd_linf, _, success = pgdlinf_att(
-                f_model, adv_input_01, target, epsilons=4 / 255
-            )
-            adv_input = normalize(adv_fbpgd_linf.to(input.device), typ=self.fp16)
-            # adv_input = normalize(adv_fbpgd_linf.cuda(), typ=self.fp16)
-            input = torch.cat([input, adv_input], 0)
-            target = torch.cat([target, target], 0)
-            self.model.train()
             # forward
             logits = self.model(input)
             # mixup
@@ -347,9 +322,26 @@ class ClsSolver(BaseSolver):
 
             # compute and update gradient
             self.optimizer.zero_grad()
-            loss.backward()
-            self.model.sync_gradients()
-            self.optimizer.step()
+            if FusedFP16SGD is not None and isinstance(self.optimizer, FusedFP16SGD):
+                self.optimizer.backward(loss)
+                self.model.sync_gradients()
+                self.optimizer.step()
+            elif isinstance(self.optimizer, FP16SGD) or isinstance(
+                self.optimizer, FP16RMSprop
+            ):
+
+                def closure():
+                    self.optimizer.backward(loss, False)
+                    self.model.sync_gradients()
+                    # check overflow, convert to fp32 grads, downscale
+                    self.optimizer.update_master_grads()
+                    return loss
+
+                self.optimizer.step(closure)
+            else:
+                loss.backward()
+                self.model.sync_gradients()
+                self.optimizer.step()
 
             # EMA
             if self.ema is not None:
@@ -434,15 +426,68 @@ class ClsSolver(BaseSolver):
     @torch.no_grad()
     def evaluate(self):
         self.model.eval()
-        res_file = os.path.join(
-            self.path.result_path, f"results.txt.rank{self.dist.rank}"
-        )
-        writer = open(res_file, "w")
+        # Ensure all ranks are synchronized before evaluation
+        if self.dist.world_size > 1:
+            link.barrier()
+        imagenetc_flag = self.config.data.test.get("imagenet_c", False)
+        if imagenetc_flag:
+
+            noise_list = []
+
+            writer = {
+                "noise": {"gaussian_noise": {}, "shot_noise": {}, "impulse_noise": {}},
+                "blur": {
+                    "defocus_blur": {},
+                    "glass_blur": {},
+                    "motion_blur": {},
+                    "zoom_blur": {},
+                },
+                "weather": {"snow": {}, "frost": {}, "fog": {}, "brightness": {}},
+                "digital": {
+                    "contrast": {},
+                    "elastic_transform": {},
+                    "pixelate": {},
+                    "jpeg_compression": {},
+                },
+                "extra": {
+                    "speckle_noise": {},
+                    "spatter": {},
+                    "gaussian_blur": {},
+                    "saturate": {},
+                },
+            }
+            for noise in writer:
+                for noise_type in writer[noise]:
+                    for i in range(1, 6):
+                        res_file = os.path.join(
+                            self.path.result_path,
+                            f"{noise}-{noise_type}-{i}-results.txt.rank{self.dist.rank}",
+                        )
+                        writer[noise][noise_type][i] = open(res_file, "w")
+                        noise_list.append(
+                            os.path.join(
+                                self.path.result_path,
+                                f"{noise}-{noise_type}-{i}-results.txt.rank",
+                            )
+                        )
+            noise_list = sorted(noise_list)
+        else:
+            res_file = os.path.join(
+                self.path.result_path, f"results.txt.rank{self.dist.rank}"
+            )
+            writer = open(res_file, "w")
+
         for batch_idx, batch in enumerate(self.val_data["loader"]):
+            if batch_idx % 10 == 0:
+                info_str = f"[{batch_idx}/{len(self.val_data['loader'])}] "
+                info_str += f"{batch_idx * 100 / len(self.val_data['loader']):.6f}%"
+                self.logger.info(info_str)
             input = batch["image"]
             label = batch["label"]
-            input = input.cuda().half() if self.fp16 else input.cuda()
-            label = label.squeeze().view(-1).cuda().long()
+            # Move data to the correct GPU for this rank
+            device_id = self.dist.rank % torch.cuda.device_count()
+            input = input.cuda(device=device_id)
+            label = label.squeeze().view(-1).cuda(device=device_id).long()
             # compute output
             logits = self.model(input)
             scores = F.softmax(logits, dim=1)
@@ -454,18 +499,35 @@ class ClsSolver(BaseSolver):
             batch.update({"score": scores})
             # save prediction information
             self.val_data["loader"].dataset.dump(writer, batch)
-
-        writer.close()
-        link.barrier()
-        if self.dist.rank == 0:
-            metrics = self.val_data["loader"].dataset.evaluate(res_file)
-            self.logger.info(json.dumps(metrics.metric, indent=2))
+        if imagenetc_flag:
+            for noise in writer:
+                for noise_type in writer[noise]:
+                    for i in range(1, 6):
+                        writer[noise][noise_type][i].close()
         else:
-            metrics = {}
+            writer.close()
         link.barrier()
+        if imagenetc_flag:
+            for idx, file_prefix in enumerate(noise_list):
+                if idx % self.dist.world_size == self.dist.rank:
+                    # print(f"idx: {idx}, rank: {self.dist.rank}, {file_prefix}")
+                    self.val_data["loader"].dataset.evaluate(file_prefix)
+            link.barrier()
+            if self.dist.rank == 0:
+                self.val_data["loader"].dataset.merge_eval_res(self.path.result_path)
+            metrics = {}
+        else:
+            if self.dist.rank == 0:
+                metrics = self.val_data["loader"].dataset.evaluate(res_file)
+                # self.logger.info(json.dumps(metrics.metric, indent=2))
+            else:
+                metrics = {}
+        link.barrier()
+
         # broadcast metrics to other process
         metrics = broadcast_object(metrics)
-        self.model.train()
+        # self.model.train()
+        self.logger.info(f"{self.prefix_name} done.")
         return metrics
 
 
@@ -474,24 +536,42 @@ def main():
     parser = argparse.ArgumentParser(description="Classification Solver")
     parser.add_argument("--config", required=True, type=str)
     parser.add_argument("--evaluate", action="store_true")
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    torch.cuda.set_device(local_rank)
+
     args = parser.parse_args()
     # build solver
-    solver = ClsSolver(args.config)
-    # evaluate or train
-    if args.evaluate:
-        if not hasattr(solver.config.saver, "pretrain"):
-            solver.logger.warn("Evaluating without resuming any solver checkpoints.")
-        solver.evaluate()
-        if solver.ema is not None:
-            solver.ema.load_ema(solver.model)
-            solver.evaluate()
+    config = parse_config(args.config)
+    # model_list = config['eval_list']
+    status = open("status.txt", "w")
+
+    # Use model_entry to build model from config, similar to imgnet_c_solver.py
+    if hasattr(config, "model"):
+        model_config = config.model
     else:
-        if solver.config.data.last_iter < solver.config.data.max_iter:
-            solver.train()
-        else:
-            solver.logger.info("Training has been completed to max_iter!")
+        raise ValueError("Config must have 'model' field")
+
+    if SPRING_MODELS_REGISTRY is not None and hasattr(config, "eval_list"):
+        # If eval_list exists and SPRING_MODELS_REGISTRY is available, use it
+        model_name = "resnext50_32x4d"
+        model = SPRING_MODELS_REGISTRY.get(model_name)(
+            pretrained=True,
+            num_classes=1000,
+            normalize={"type": "solo_bn"},
+            initializer={"method": "msra"},
+            frozen_layers=[],
+            pretrain_type="imagenet1k",
+            task="classification",
+        )
+        solver = MultiEvalSolver(config, model, model_name)
+    else:
+        # Use model_entry to build model from config (similar to imgnet_c_solver.py)
+        model = model_entry(model_config, full_config=config)
+        model_name = model_config.type
+        solver = MultiEvalSolver(config, model, model_name)
+
+    # evaluate or train
+    solver.evaluate()
+    status.write(f"{model_name} done\n")
+    status.close()
 
 
 if __name__ == "__main__":

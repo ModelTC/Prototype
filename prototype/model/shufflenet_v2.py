@@ -6,8 +6,13 @@ from prototype.prototype.utils.misc import get_bn
 
 BN = None
 
-__all__ = ['shufflenet_v2_x0_5', 'shufflenet_v2_x1_0',
-           'shufflenet_v2_x1_5', 'shufflenet_v2_x2_0', 'shufflenet_v2_scale']
+__all__ = [
+    "shufflenet_v2_x0_5",
+    "shufflenet_v2_x1_0",
+    "shufflenet_v2_x1_5",
+    "shufflenet_v2_x2_0",
+    "shufflenet_v2_scale",
+]
 
 
 def channel_shuffle(x, groups):
@@ -15,8 +20,7 @@ def channel_shuffle(x, groups):
     channels_per_group = num_channels // groups
 
     # reshape
-    x = x.view(batchsize, groups,
-               channels_per_group, height, width)
+    x = x.view(batchsize, groups, channels_per_group, height, width)
 
     x = torch.transpose(x, 1, 2).contiguous()
 
@@ -31,7 +35,7 @@ class InvertedResidual(nn.Module):
         super(InvertedResidual, self).__init__()
 
         if not (1 <= stride <= 3):
-            raise ValueError('illegal stride value')
+            raise ValueError("illegal stride value")
         self.stride = stride
 
         branch_features = oup // 2
@@ -39,25 +43,44 @@ class InvertedResidual(nn.Module):
 
         if self.stride > 1:
             self.branch1 = nn.Sequential(
-                self.depthwise_conv(inp, inp, kernel_size=3,
-                                    stride=self.stride, padding=1),
+                self.depthwise_conv(
+                    inp, inp, kernel_size=3, stride=self.stride, padding=1
+                ),
                 BN(inp),
-                nn.Conv2d(inp, branch_features, kernel_size=1,
-                          stride=1, padding=0, bias=False),
+                nn.Conv2d(
+                    inp, branch_features, kernel_size=1, stride=1, padding=0, bias=False
+                ),
                 BN(branch_features),
                 nn.ReLU(inplace=True),
             )
 
         self.branch2 = nn.Sequential(
-            nn.Conv2d(inp if (self.stride > 1) else branch_features,
-                      branch_features, kernel_size=1, stride=1, padding=0, bias=False),
+            nn.Conv2d(
+                inp if (self.stride > 1) else branch_features,
+                branch_features,
+                kernel_size=1,
+                stride=1,
+                padding=0,
+                bias=False,
+            ),
             BN(branch_features),
             nn.ReLU(inplace=True),
-            self.depthwise_conv(branch_features, branch_features,
-                                kernel_size=3, stride=self.stride, padding=1),
+            self.depthwise_conv(
+                branch_features,
+                branch_features,
+                kernel_size=3,
+                stride=self.stride,
+                padding=1,
+            ),
             BN(branch_features),
-            nn.Conv2d(branch_features, branch_features,
-                      kernel_size=1, stride=1, padding=0, bias=False),
+            nn.Conv2d(
+                branch_features,
+                branch_features,
+                kernel_size=1,
+                stride=1,
+                padding=0,
+                bias=False,
+            ),
             BN(branch_features),
             nn.ReLU(inplace=True),
         )
@@ -82,6 +105,7 @@ class ShuffleNetV2(nn.Module):
     """ShuffleNet model class, based on
     `"ShuffleNet V2: Practical Guidelines for Efficient CNN Architecture Design" <https://arxiv.org/abs/1807.11164>`_
     """
+
     def __init__(self, stages_repeats, stages_out_channels, num_classes=1000, bn=None):
         r"""
         - stages_repeats (:obj:`list` of 3 ints): how many layers in each stage
@@ -92,11 +116,9 @@ class ShuffleNetV2(nn.Module):
         super(ShuffleNetV2, self).__init__()
 
         if len(stages_repeats) != 3:
-            raise ValueError(
-                'expected stages_repeats as list of 3 positive ints')
+            raise ValueError("expected stages_repeats as list of 3 positive ints")
         if len(stages_out_channels) != 5:
-            raise ValueError(
-                'expected stages_out_channels as list of 5 positive ints')
+            raise ValueError("expected stages_out_channels as list of 5 positive ints")
         self._stage_out_channels = stages_out_channels
 
         global BN
@@ -114,13 +136,13 @@ class ShuffleNetV2(nn.Module):
 
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
-        stage_names = ['stage{}'.format(i) for i in [2, 3, 4]]
+        stage_names = ["stage{}".format(i) for i in [2, 3, 4]]
         for name, repeats, output_channels in zip(
-                stage_names, stages_repeats, self._stage_out_channels[1:]):
+            stage_names, stages_repeats, self._stage_out_channels[1:]
+        ):
             seq = [InvertedResidual(input_channels, output_channels, 2)]
             for i in range(repeats - 1):
-                seq.append(InvertedResidual(
-                    output_channels, output_channels, 1))
+                seq.append(InvertedResidual(output_channels, output_channels, 1))
             setattr(self, name, nn.Sequential(*seq))
             input_channels = output_channels
 
@@ -137,13 +159,13 @@ class ShuffleNetV2(nn.Module):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                m.weight.data.normal_(0, math.sqrt(2. / n))
-            elif (isinstance(m, SyncBatchNorm2d) or isinstance(m, nn.BatchNorm2d)):
+                m.weight.data.normal_(0, math.sqrt(2.0 / n))
+            elif isinstance(m, SyncBatchNorm2d) or isinstance(m, nn.BatchNorm2d):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
             elif isinstance(m, nn.Linear):
                 n = m.weight.size(1)
-                m.weight.data.normal_(0, 1.0/float(n))
+                m.weight.data.normal_(0, 1.0 / float(n))
                 m.bias.data.zero_()
 
     def forward(self, x):

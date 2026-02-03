@@ -10,10 +10,10 @@ class MultiClsMetric(Metric):
         super(MultiClsMetric, self).__init__(self.metric)
 
     def __str__(self):
-        return f'metric={self.metric} key={self.cmp_key}'
+        return f"metric={self.metric} key={self.cmp_key}"
 
     def __repr__(self):
-        return f'metric={self.metric} key={self.cmp_key}'
+        return f"metric={self.metric} key={self.cmp_key}"
 
 
 class MultiClsEvaluator(Evaluator):
@@ -39,16 +39,16 @@ class MultiClsEvaluator(Evaluator):
 
     def eval(self, res_file):
         res_dict = self.load_res(res_file)
-        pred = torch.from_numpy(np.array(res_dict['score']))
-        label = torch.from_numpy(np.array(res_dict['label_list']))
-        label_name_list = res_dict['label_name_list'][0]
+        pred = torch.from_numpy(np.array(res_dict["score"]))
+        label = torch.from_numpy(np.array(res_dict["label_list"]))
+        label_name_list = res_dict["label_name_list"][0]
         res = {}
         num = pred.size(0)
         for i in range(label.size(1)):
             s_pred = pred[:, i, :]
             s_label = label[:, i]
             _, s_pred = s_pred.topk(1, 1, True, True)
-            correct = s_pred.view(-1).eq(s_label)
+            correct = s_pred.reshape(-1).eq(s_label)
             correct_k = correct.float().sum()
             acc = correct_k.mul_(100.0 / num)
             res.update({label_name_list[i]: acc.item()})

@@ -12,10 +12,10 @@ class CustomMetric(Metric):
         super(CustomMetric, self).__init__(self.metric)
 
     def __str__(self):
-        return f'metric={self.metric} key={self.cmp_key}'
+        return f"metric={self.metric} key={self.cmp_key}"
 
     def __repr__(self):
-        return f'metric={self.metric} key={self.cmp_key}'
+        return f"metric={self.metric} key={self.cmp_key}"
 
     def set_cmp_key(self, key):
         self.cmp_key = key
@@ -24,11 +24,7 @@ class CustomMetric(Metric):
 
 
 class CustomEvaluator(Evaluator):
-    def __init__(self,
-                 key_metric,
-                 defect_classes,
-                 recall_thres,
-                 tpr_thres):
+    def __init__(self, key_metric, defect_classes, recall_thres, tpr_thres):
         super(CustomEvaluator, self).__init__()
         self.key_metric = key_metric
         self.recall_thres = recall_thres
@@ -68,11 +64,13 @@ class CustomEvaluator(Evaluator):
             current_tpr = float(current_norm) / total_norm
             for one_tpr_thres in self.tpr_thres:
                 if current_tpr >= one_tpr_thres:
-                    tpr_recall_dic[one_tpr_thres] = max(tpr_recall_dic.get(one_tpr_thres, -np.inf), current_recall)
+                    tpr_recall_dic[one_tpr_thres] = max(
+                        tpr_recall_dic.get(one_tpr_thres, -np.inf), current_recall
+                    )
         ret_metrics = {}
         # recall@tpr
-        for (one_tpr, one_recall) in tpr_recall_dic.items():
-            ret_metrics['recall@tpr{}'.format(one_tpr)] = one_recall
+        for one_tpr, one_recall in tpr_recall_dic.items():
+            ret_metrics["recall@tpr{}".format(one_tpr)] = one_recall
         return ret_metrics
 
     def calculate_recall_fpr(self, sorted_labels, sorted_probs):
@@ -81,8 +79,8 @@ class CustomEvaluator(Evaluator):
         total_neg_nums = len(sorted_labels) - total_pos_nums
 
         target_recall_nums = [math.ceil(i * total_pos_nums) for i in self.recall_thres]
-        self.logger.info('recall thres: {}'.format(self.recall_thres))
-        self.logger.info('target recall nums: {}'.format(target_recall_nums))
+        self.logger.info("recall thres: {}".format(self.recall_thres))
+        self.logger.info("target recall nums: {}".format(target_recall_nums))
         recall_precsion_vecs = []
         fnr_fpr_vecs = []
         for target_num in target_recall_nums:
@@ -109,13 +107,17 @@ class CustomEvaluator(Evaluator):
             fnr = (1 - self.recall_thres[i]) * 100
             fnr = round(fnr)
             # fpr@recall
-            ret_metrics['fpr@{}recall'.format(recall_precsion_vecs[i][0])] = fnr_fpr_vecs[i][1]
+            ret_metrics["fpr@{}recall".format(recall_precsion_vecs[i][0])] = (
+                fnr_fpr_vecs[i][1]
+            )
 
             self.logger.info(
                 "recall: {:.5f}, fpr: {:.5f}, score: {:.5f}".format(
                     recall_precsion_vecs[i][0],
                     fnr_fpr_vecs[i][1],
-                    recall_precsion_vecs[i][2]))
+                    recall_precsion_vecs[i][2],
+                )
+            )
 
         return ret_metrics
 
@@ -126,7 +128,9 @@ class CustomEvaluator(Evaluator):
         # sum all the pos probs, use one thres
         all_pos_probs = scores[:, self.defect_classes].sum(axis=1)
         neg_pos_labels = np.asarray(labels, dtype=int)
-        neg_pos_labels = list(map(lambda x: 1 if x in self.defect_classes else 0, neg_pos_labels))
+        neg_pos_labels = list(
+            map(lambda x: 1 if x in self.defect_classes else 0, neg_pos_labels)
+        )
         neg_pos_labels = np.asarray(neg_pos_labels, dtype=int)
 
         sorted_idx = np.argsort(all_pos_probs)[::-1]
@@ -136,7 +140,7 @@ class CustomEvaluator(Evaluator):
         # auc
         fpr, tpr, _ = metrics.roc_curve(neg_pos_labels, all_pos_probs, pos_label=1)
         auc = metrics.auc(fpr, tpr)
-        ret_metrics['auc'] = auc
+        ret_metrics["auc"] = auc
         # ap
         ap = metrics.average_precision_score(neg_pos_labels, all_pos_probs)
         ret_metrics["AP"] = ap
@@ -149,8 +153,8 @@ class CustomEvaluator(Evaluator):
 
     def eval(self, res_file):
         res_dict = self.load_res(res_file)
-        labels = res_dict['label']
-        scores = res_dict['score']
+        labels = res_dict["label"]
+        scores = res_dict["score"]
         ret_metrics = self.performances(labels, scores)
         metric = CustomMetric(ret_metrics)
         metric.set_cmp_key(self.key_metric)

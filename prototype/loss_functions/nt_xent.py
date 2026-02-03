@@ -14,7 +14,7 @@ class NT_Xent(_Loss):
         self.temperature = temperature
         self.mask = self.mask_correlated_samples(batch_size)
 
-        self.criterion = nn.CrossEntropyLoss(reduction='sum')
+        self.criterion = nn.CrossEntropyLoss(reduction="sum")
         self.similarity_f = nn.CosineSimilarity(dim=2)
 
     def mask_correlated_samples(self, batch_size):

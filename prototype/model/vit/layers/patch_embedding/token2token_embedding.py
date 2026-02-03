@@ -9,17 +9,40 @@ from ..drop_path import DropPath
 
 class Token_transformer(nn.Module):
 
-    def __init__(self, dim, in_dim, num_heads, mlp_ratio=1., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
+    def __init__(
+        self,
+        dim,
+        in_dim,
+        num_heads,
+        mlp_ratio=1.0,
+        qkv_bias=False,
+        qk_scale=None,
+        drop=0.0,
+        attn_drop=0.0,
+        drop_path=0.0,
+        act_layer=nn.GELU,
+        norm_layer=nn.LayerNorm,
+    ):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn = Token2TokenAttention(
-            dim, in_dim=in_dim, num_heads=num_heads, qkv_bias=qkv_bias,
-            qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+            dim,
+            in_dim=in_dim,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            qk_scale=qk_scale,
+            attn_drop=attn_drop,
+            proj_drop=drop,
+        )
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
         self.norm2 = norm_layer(in_dim)
-        self.mlp = VanillaMlp(in_features=in_dim, hidden_features=int(in_dim*mlp_ratio),
-                              out_features=in_dim, act_layer=act_layer, drop=drop)
+        self.mlp = VanillaMlp(
+            in_features=in_dim,
+            hidden_features=int(in_dim * mlp_ratio),
+            out_features=in_dim,
+            act_layer=act_layer,
+            drop=drop,
+        )
 
     def forward(self, x):
         x = self.attn(self.norm1(x))
@@ -48,7 +71,9 @@ class Token_performer(nn.Module):
 
         self.m = int(self.emb * kernel_ratio)
         self.w = torch.randn(self.m, self.emb)
-        self.w = nn.Parameter(nn.init.orthogonal_(self.w) * math.sqrt(self.m), requires_grad=False)
+        self.w = nn.Parameter(
+            nn.init.orthogonal_(self.w) * math.sqrt(self.m), requires_grad=False
+        )
 
     def prm_exp(self, x):
         # part of the function is borrow from https://github.com/lucidrains/performer-pytorch
@@ -60,18 +85,24 @@ class Token_performer(nn.Module):
         # SM(x, y) = E_w[exp(w^T x - |x|/2) exp(w^T y - |y|/2)]
         # therefore return exp(w^Tx - |x|/2)/sqrt(m)
         xd = ((x * x).sum(dim=-1, keepdim=True)).repeat(1, 1, self.m) / 2
-        wtx = torch.einsum('bti,mi->btm', x.float(), self.w)
+        wtx = torch.einsum("bti,mi->btm", x.float(), self.w)
 
         return torch.exp(wtx - xd) / math.sqrt(self.m)
 
     def single_attn(self, x):
         k, q, v = torch.split(self.kqv(x), self.emb, dim=-1)
         kp, qp = self.prm_exp(k), self.prm_exp(q)  # (B, T, m), (B, T, m)
-        D = torch.einsum('bti,bi->bt', qp, kp.sum(dim=1)).unsqueeze(dim=2)  # (B, T, m) * (B, m) -> (B, T, 1)
-        kptv = torch.einsum('bin,bim->bnm', v.float(), kp)  # (B, emb, m)
-        y = torch.einsum('bti,bni->btn', qp, kptv) / (D.repeat(1, 1, self.emb) + self.epsilon)  # (B, T, emb)/Diag
+        D = torch.einsum("bti,bi->bt", qp, kp.sum(dim=1)).unsqueeze(
+            dim=2
+        )  # (B, T, m) * (B, m) -> (B, T, 1)
+        kptv = torch.einsum("bin,bim->bnm", v.float(), kp)  # (B, emb, m)
+        y = torch.einsum("bti,bni->btn", qp, kptv) / (
+            D.repeat(1, 1, self.emb) + self.epsilon
+        )  # (B, T, emb)/Diag
         # skip connection
-        y = v + self.dp(self.proj(y))  # same as token_transformer in T2T layer, use v as skip connection
+        y = v + self.dp(
+            self.proj(y)
+        )  # same as token_transformer in T2T layer, use v as skip connection
 
         return y
 
@@ -85,19 +116,35 @@ class T2T_module(nn.Module):
     """
     Tokens-to-Token encoding module
     """
-    def __init__(self, img_size=224, tokens_type='performer', in_chans=3, embed_dim=768, token_dim=64):
+
+    def __init__(
+        self,
+        img_size=224,
+        tokens_type="performer",
+        in_chans=3,
+        embed_dim=768,
+        token_dim=64,
+    ):
         super().__init__()
 
         self.soft_split0 = nn.Unfold(kernel_size=(7, 7), stride=(4, 4), padding=(2, 2))
         self.soft_split1 = nn.Unfold(kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
         self.soft_split2 = nn.Unfold(kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
 
-        if tokens_type == 'transformer':
-            self.attention1 = Token_transformer(dim=in_chans * 7 * 7, in_dim=token_dim, num_heads=1, mlp_ratio=1.0)
-            self.attention2 = Token_transformer(dim=token_dim * 3 * 3, in_dim=token_dim, num_heads=1, mlp_ratio=1.0)
-        elif tokens_type == 'performer':
-            self.attention1 = Token_performer(dim=in_chans * 7 * 7, in_dim=token_dim, kernel_ratio=0.5)
-            self.attention2 = Token_performer(dim=token_dim * 3 * 3, in_dim=token_dim, kernel_ratio=0.5)
+        if tokens_type == "transformer":
+            self.attention1 = Token_transformer(
+                dim=in_chans * 7 * 7, in_dim=token_dim, num_heads=1, mlp_ratio=1.0
+            )
+            self.attention2 = Token_transformer(
+                dim=token_dim * 3 * 3, in_dim=token_dim, num_heads=1, mlp_ratio=1.0
+            )
+        elif tokens_type == "performer":
+            self.attention1 = Token_performer(
+                dim=in_chans * 7 * 7, in_dim=token_dim, kernel_ratio=0.5
+            )
+            self.attention2 = Token_performer(
+                dim=token_dim * 3 * 3, in_dim=token_dim, kernel_ratio=0.5
+            )
         else:
             raise NotImplementedError
 

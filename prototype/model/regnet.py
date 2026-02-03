@@ -4,30 +4,156 @@ import math
 from prototype.spring.linklink.nn import SyncBatchNorm2d
 from prototype.prototype.utils.misc import get_bn, get_logger
 
-regnetX_200M_config = {'WA': 36.44, 'W0': 24, 'WM': 2.49, 'DEPTH': 13, 'GROUP_W': 8, 'SE_ON': False}
-regnetX_400M_config = {'WA': 24.48, 'W0': 24, 'WM': 2.54, 'DEPTH': 22, 'GROUP_W': 16, 'SE_ON': False}
-regnetX_600M_config = {'WA': 36.97, 'W0': 48, 'WM': 2.24, 'DEPTH': 16, 'GROUP_W': 24, 'SE_ON': False}
-regnetX_800M_config = {'WA': 35.73, 'W0': 56, 'WM': 2.28, 'DEPTH': 16, 'GROUP_W': 16, 'SE_ON': False}
-regnetX_1600M_config = {'WA': 34.01, 'W0': 80, 'WM': 2.25, 'DEPTH': 18, 'GROUP_W': 24, 'SE_ON': False}
-regnetX_3200M_config = {'WA': 26.31, 'W0': 88, 'WM': 2.25, 'DEPTH': 25, 'GROUP_W': 48, 'SE_ON': False}
-regnetX_4000M_config = {'WA': 38.65, 'W0': 96, 'WM': 2.43, 'DEPTH': 23, 'GROUP_W': 40, 'SE_ON': False}
-regnetX_6400M_config = {'WA': 60.83, 'W0': 184, 'WM': 2.07, 'DEPTH': 17, 'GROUP_W': 56, 'SE_ON': False}
-regnetY_200M_config = {'WA': 36.44, 'W0': 24, 'WM': 2.49, 'DEPTH': 13, 'GROUP_W': 8, 'SE_ON': True}
-regnetY_400M_config = {'WA': 27.89, 'W0': 48, 'WM': 2.09, 'DEPTH': 16, 'GROUP_W': 8, 'SE_ON': True}
-regnetY_600M_config = {'WA': 32.54, 'W0': 48, 'WM': 2.32, 'DEPTH': 15, 'GROUP_W': 16, 'SE_ON': True}
-regnetY_800M_config = {'WA': 38.84, 'W0': 56, 'WM': 2.4, 'DEPTH': 14, 'GROUP_W': 16, 'SE_ON': True}
-regnetY_1600M_config = {'WA': 20.71, 'W0': 48, 'WM': 2.65, 'DEPTH': 27, 'GROUP_W': 24, 'SE_ON': True}
-regnetY_3200M_config = {'WA': 42.63, 'W0': 80, 'WM': 2.66, 'DEPTH': 21, 'GROUP_W': 24, 'SE_ON': True}
-regnetY_4000M_config = {'WA': 31.41, 'W0': 96, 'WM': 2.24, 'DEPTH': 22, 'GROUP_W': 64, 'SE_ON': True}
-regnetY_6400M_config = {'WA': 33.22, 'W0': 112, 'WM': 2.27, 'DEPTH': 25, 'GROUP_W': 72, 'SE_ON': True}
+regnetX_200M_config = {
+    "WA": 36.44,
+    "W0": 24,
+    "WM": 2.49,
+    "DEPTH": 13,
+    "GROUP_W": 8,
+    "SE_ON": False,
+}
+regnetX_400M_config = {
+    "WA": 24.48,
+    "W0": 24,
+    "WM": 2.54,
+    "DEPTH": 22,
+    "GROUP_W": 16,
+    "SE_ON": False,
+}
+regnetX_600M_config = {
+    "WA": 36.97,
+    "W0": 48,
+    "WM": 2.24,
+    "DEPTH": 16,
+    "GROUP_W": 24,
+    "SE_ON": False,
+}
+regnetX_800M_config = {
+    "WA": 35.73,
+    "W0": 56,
+    "WM": 2.28,
+    "DEPTH": 16,
+    "GROUP_W": 16,
+    "SE_ON": False,
+}
+regnetX_1600M_config = {
+    "WA": 34.01,
+    "W0": 80,
+    "WM": 2.25,
+    "DEPTH": 18,
+    "GROUP_W": 24,
+    "SE_ON": False,
+}
+regnetX_3200M_config = {
+    "WA": 26.31,
+    "W0": 88,
+    "WM": 2.25,
+    "DEPTH": 25,
+    "GROUP_W": 48,
+    "SE_ON": False,
+}
+regnetX_4000M_config = {
+    "WA": 38.65,
+    "W0": 96,
+    "WM": 2.43,
+    "DEPTH": 23,
+    "GROUP_W": 40,
+    "SE_ON": False,
+}
+regnetX_6400M_config = {
+    "WA": 60.83,
+    "W0": 184,
+    "WM": 2.07,
+    "DEPTH": 17,
+    "GROUP_W": 56,
+    "SE_ON": False,
+}
+regnetY_200M_config = {
+    "WA": 36.44,
+    "W0": 24,
+    "WM": 2.49,
+    "DEPTH": 13,
+    "GROUP_W": 8,
+    "SE_ON": True,
+}
+regnetY_400M_config = {
+    "WA": 27.89,
+    "W0": 48,
+    "WM": 2.09,
+    "DEPTH": 16,
+    "GROUP_W": 8,
+    "SE_ON": True,
+}
+regnetY_600M_config = {
+    "WA": 32.54,
+    "W0": 48,
+    "WM": 2.32,
+    "DEPTH": 15,
+    "GROUP_W": 16,
+    "SE_ON": True,
+}
+regnetY_800M_config = {
+    "WA": 38.84,
+    "W0": 56,
+    "WM": 2.4,
+    "DEPTH": 14,
+    "GROUP_W": 16,
+    "SE_ON": True,
+}
+regnetY_1600M_config = {
+    "WA": 20.71,
+    "W0": 48,
+    "WM": 2.65,
+    "DEPTH": 27,
+    "GROUP_W": 24,
+    "SE_ON": True,
+}
+regnetY_3200M_config = {
+    "WA": 42.63,
+    "W0": 80,
+    "WM": 2.66,
+    "DEPTH": 21,
+    "GROUP_W": 24,
+    "SE_ON": True,
+}
+regnetY_4000M_config = {
+    "WA": 31.41,
+    "W0": 96,
+    "WM": 2.24,
+    "DEPTH": 22,
+    "GROUP_W": 64,
+    "SE_ON": True,
+}
+regnetY_6400M_config = {
+    "WA": 33.22,
+    "W0": 112,
+    "WM": 2.27,
+    "DEPTH": 25,
+    "GROUP_W": 72,
+    "SE_ON": True,
+}
 
 
 BN = None
 
-__all__ = ['regnetx_200m', 'regnetx_400m', 'regnetx_600m', 'regnetx_800m',
-           'regnetx_1600m', 'regnetx_3200m', 'regnetx_4000m', 'regnetx_6400m',
-           'regnety_200m', 'regnety_400m', 'regnety_600m', 'regnety_800m',
-           'regnety_1600m', 'regnety_3200m', 'regnety_4000m', 'regnety_6400m']
+__all__ = [
+    "regnetx_200m",
+    "regnetx_400m",
+    "regnetx_600m",
+    "regnetx_800m",
+    "regnetx_1600m",
+    "regnetx_3200m",
+    "regnetx_4000m",
+    "regnetx_6400m",
+    "regnety_200m",
+    "regnety_400m",
+    "regnety_600m",
+    "regnety_800m",
+    "regnety_1600m",
+    "regnety_3200m",
+    "regnety_4000m",
+    "regnety_6400m",
+]
 
 
 class SimpleStemIN(nn.Module):
@@ -201,7 +327,7 @@ class AnyNet(nn.Module):
                 # Note that there is no bias due to BN
                 fan_out = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
                 m.weight.data.normal_(mean=0.0, std=math.sqrt(2.0 / fan_out))
-            elif (isinstance(m, SyncBatchNorm2d) or isinstance(m, nn.BatchNorm2d)):
+            elif isinstance(m, SyncBatchNorm2d) or isinstance(m, nn.BatchNorm2d):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
             elif isinstance(m, nn.Linear):
@@ -294,14 +420,10 @@ class RegNet(AnyNet):
     `"Designing Network Design Spaces" <https://arxiv.org/abs/2003.13678>`_
     """
 
-    def __init__(self,
-                 cfg,
-                 num_classes=1000,
-                 scale=1.0,
-                 bn=None):
+    def __init__(self, cfg, num_classes=1000, scale=1.0, bn=None):
         # Generate RegNet ws per block
         b_ws, num_s, _, _ = generate_regnet(
-            cfg['WA'], cfg['W0'], cfg['WM'], cfg['DEPTH']
+            cfg["WA"], cfg["W0"], cfg["WM"], cfg["DEPTH"]
         )
         # Convert to per stage format
         # ws: channel list for stages, ds: number of blocks list
@@ -309,14 +431,14 @@ class RegNet(AnyNet):
         # scale-up/down channels
         ws = [int(_w * scale) for _w in ws]
         # Generate group widths and bot muls
-        gws = [cfg['GROUP_W'] for _ in range(num_s)]
+        gws = [cfg["GROUP_W"] for _ in range(num_s)]
         bms = [1 for _ in range(num_s)]
         # Adjust the compatibility of ws and gws
         ws, gws = adjust_ws_gs_comp(ws, bms, gws)
         # Use the same stride for each stage, stride set to 2
         ss = [2 for _ in range(num_s)]
         # Use SE for RegNetY
-        se_r = 0.25 if cfg['SE_ON'] else None
+        se_r = 0.25 if cfg["SE_ON"] else None
         # Construct the model
         STEM_W = int(32 * scale)
 

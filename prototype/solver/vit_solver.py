@@ -14,9 +14,9 @@ def _build_optimizer(solver):
     solver.prototype_info.optimizer = solver.config.optimizer.type
 
     # make param_groups
-    if opt_config.get('no_wd', False):
-        fc_nowd = opt_config.no_wd.get('fc', False)
-        norm_nowd = opt_config.no_wd.get('norm', False)
+    if opt_config.get("no_wd", False):
+        fc_nowd = opt_config.no_wd.get("fc", False)
+        norm_nowd = opt_config.no_wd.get("norm", False)
         no_wd = solver.model.module.get_param_no_wd(fc=fc_nowd, norm=norm_nowd)
 
         normal_params = []
@@ -28,16 +28,18 @@ def _build_optimizer(solver):
                     break
             if wd:
                 normal_params.append(p)
-        param_group = [{'params': no_wd, 'weight_decay': 0.0},
-                       {'params': normal_params}]
+        param_group = [
+            {"params": no_wd, "weight_decay": 0.0},
+            {"params": normal_params},
+        ]
     else:
-        param_group = [{'params': solver.model.parameters()}]
+        param_group = [{"params": solver.model.parameters()}]
 
     opt_config.kwargs.params = param_group
     solver.optimizer = optim_entry(opt_config)
 
-    if 'optimizer' in solver.state:
-        load_state_optimizer(solver.optimizer, solver.state['optimizer'])
+    if "optimizer" in solver.state:
+        load_state_optimizer(solver.optimizer, solver.state["optimizer"])
 
     # EMA
     if solver.config.ema.enable:
@@ -46,8 +48,8 @@ def _build_optimizer(solver):
     else:
         solver.ema = None
 
-    if 'ema' in solver.state:
-        solver.ema.load_state_dict(solver.state['ema'])
+    if "ema" in solver.state:
+        solver.ema.load_state_dict(solver.state["ema"])
 
 
 class ViTSolver(ClsSolver):
@@ -68,24 +70,24 @@ class CifarViTSolver(CifarClsSolver):
 
 @link_dist
 def main():
-    parser = argparse.ArgumentParser(description='Classification Solver')
-    parser.add_argument('--config', required=True, type=str)
-    parser.add_argument('--evaluate', action='store_true')
-    parser.add_argument('--solver', default='ViTSolver')
+    parser = argparse.ArgumentParser(description="Classification Solver")
+    parser.add_argument("--config", required=True, type=str)
+    parser.add_argument("--evaluate", action="store_true")
+    parser.add_argument("--solver", default="ViTSolver")
 
     args = parser.parse_args()
     # build solver
-    if args.solver == 'ViTSolver':
+    if args.solver == "ViTSolver":
         solver = ViTSolver(args.config)
-    elif args.solver == 'CifarViTSolver':
+    elif args.solver == "CifarViTSolver":
         solver = CifarViTSolver(args.config)
     else:
-        raise ValueError('unhandled solver type: {}'.format(args.solver))
+        raise ValueError("unhandled solver type: {}".format(args.solver))
 
     # evaluate or train
     if args.evaluate:
-        if not hasattr(solver.config.saver, 'pretrain'):
-            solver.logger.warn('Evaluating without resuming any solver checkpoints.')
+        if not hasattr(solver.config.saver, "pretrain"):
+            solver.logger.warn("Evaluating without resuming any solver checkpoints.")
         solver.evaluate()
         if solver.ema is not None:
             solver.ema.load_ema(solver.model)
@@ -94,8 +96,8 @@ def main():
         if solver.config.data.last_iter < solver.config.data.max_iter:
             solver.train()
         else:
-            solver.logger.info('Training has been completed to max_iter!')
+            solver.logger.info("Training has been completed to max_iter!")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

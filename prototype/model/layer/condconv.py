@@ -37,9 +37,20 @@ class CondConv2d(nn.Module):
 
     """
 
-    def __init__(self, in_channels, out_channels, kernel_size,
-                 stride=1, padding=0, dilation=1, groups=1, bias=True,
-                 padding_mode='zeros', num_experts=1, combine_kernel=False):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride=1,
+        padding=0,
+        dilation=1,
+        groups=1,
+        bias=True,
+        padding_mode="zeros",
+        num_experts=1,
+        combine_kernel=False,
+    ):
         super(CondConv2d, self).__init__()
 
         self.in_channels = in_channels
@@ -54,11 +65,18 @@ class CondConv2d(nn.Module):
         self.combine_kernel = combine_kernel
 
         self.weight = Parameter(
-            torch.Tensor(num_experts, out_channels, in_channels // groups, kernel_size, kernel_size))
+            torch.Tensor(
+                num_experts,
+                out_channels,
+                in_channels // groups,
+                kernel_size,
+                kernel_size,
+            )
+        )
         if bias:
             self.bias = Parameter(torch.Tensor(num_experts, out_channels))
         else:
-            self.register_parameter('bias', None)
+            self.register_parameter("bias", None)
 
         self.reset_parameters()
 
@@ -70,7 +88,7 @@ class CondConv2d(nn.Module):
             nn.init.uniform_(self.bias, -bound, bound)
 
     def _combine_kernel_forward(self, input, weight, routing_weight):
-        r""" Details:
+        r"""Details:
         input: bs*c*h*w
         weight: (bs*oc)*c*kh*kw
         groups: bs
@@ -79,22 +97,36 @@ class CondConv2d(nn.Module):
         k, oc, c, kh, kw = weight.size()
         input = input.view(1, -1, h, w)
         weight = weight.view(k, -1)
-        new_weight = torch.mm(routing_weight, weight).view(-1, c, kh, kw)  # (bs*oc)*c*kh*kw
+        new_weight = torch.mm(routing_weight, weight).view(
+            -1, c, kh, kw
+        )  # (bs*oc)*c*kh*kw
         if self.bias is not None:
             new_bias = torch.mm(routing_weight, self.bias).view(-1)
             output = F.conv2d(
-                input=input, weight=new_weight, bias=new_bias, stride=self.stride, padding=self.padding,
-                dilation=self.dilation, groups=self.groups*bs)
+                input=input,
+                weight=new_weight,
+                bias=new_bias,
+                stride=self.stride,
+                padding=self.padding,
+                dilation=self.dilation,
+                groups=self.groups * bs,
+            )
         else:
             output = F.conv2d(
-                input=input, weight=new_weight, bias=None, stride=self.stride, padding=self.padding,
-                dilation=self.dilation, groups=self.groups*bs)
+                input=input,
+                weight=new_weight,
+                bias=None,
+                stride=self.stride,
+                padding=self.padding,
+                dilation=self.dilation,
+                groups=self.groups * bs,
+            )
 
         output = output.view(bs, oc, output.size(-2), output.size(-1))
         return output
 
     def _combine_feature_forward(self, input, weight, routing_weight):
-        r""" Details:
+        r"""Details:
         input: bs*(c*k)*h*w
         weight: (k*oc)*c*kh*kw
         groups: k
@@ -105,11 +137,24 @@ class CondConv2d(nn.Module):
         if self.bias is not None:
             bias = self.bias.view(-1)
             output = F.conv2d(
-                input=input, weight=weight, bias=bias, stride=self.stride, padding=self.padding,
-                dilation=self.dilation, groups=self.groups*self.num_experts)
+                input=input,
+                weight=weight,
+                bias=bias,
+                stride=self.stride,
+                padding=self.padding,
+                dilation=self.dilation,
+                groups=self.groups * self.num_experts,
+            )
         else:
-            output = F.conv2d(input=input, weight=weight, bias=None, stride=self.stride, padding=self.padding,
-                              dilation=self.dilation, groups=self.groups*self.num_experts)
+            output = F.conv2d(
+                input=input,
+                weight=weight,
+                bias=None,
+                stride=self.stride,
+                padding=self.padding,
+                dilation=self.dilation,
+                groups=self.groups * self.num_experts,
+            )
 
         bs, _, oh, ow = output.size()
         output = output.view(bs, self.num_experts, oc, oh, ow)

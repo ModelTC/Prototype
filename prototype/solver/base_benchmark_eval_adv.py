@@ -158,17 +158,25 @@ class ClsSolver(BaseSolver):
             link.fp16.init()
             self.model.half()
 
-
+        
         if 'model' in self.state_src:
             load_state_model(self.model_src, self.state_src["model"])
             load_state_model(self.model_tgt, self.state_tgt["model"])
         else:
-
-            load_state_model(self.model_src, self.state_src)
-            load_state_model(self.model_tgt, self.state_tgt)
+            from collections import OrderedDict
+            new_state_dict_src = OrderedDict()
+            for k, v in self.state_src.items():
+                new_key = k.replace("base_model.", "", 1)
+                new_state_dict_src[new_key] = v
+            new_state_dict_tgt = OrderedDict()
+            for k, v in self.state_tgt.items():
+                new_key = k.replace("base_model.", "", 1)
+                new_state_dict_tgt[new_key] = v
+            load_state_model(self.model_src, new_state_dict_src)
+            load_state_model(self.model_tgt, new_state_dict_tgt)
         self.model_src = DistModule(self.model_src, self.config.dist.sync)
         self.model_tgt = DistModule(self.model_tgt, self.config.dist.sync)
-
+        
 
     def build_data(self):
         # self.config.data.last_iter = self.state_tgt["last_iter"]

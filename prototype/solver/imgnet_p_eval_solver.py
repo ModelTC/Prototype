@@ -12,14 +12,30 @@ import torch.nn.functional as F
 
 from .base_solver import BaseSolver
 from prototype.prototype.utils.dist import link_dist, DistModule, broadcast_object
-from prototype.prototype.utils.misc import makedir, create_logger, get_logger, count_params, count_flops, \
-    param_group_all, AverageMeter, accuracy, load_state_model, load_state_optimizer, mixup_data, \
-    mix_criterion, cutmix_data, parse_config
+from prototype.prototype.utils.misc import (
+    makedir,
+    create_logger,
+    get_logger,
+    count_params,
+    count_flops,
+    param_group_all,
+    AverageMeter,
+    accuracy,
+    load_state_model,
+    load_state_optimizer,
+    mixup_data,
+    mix_criterion,
+    cutmix_data,
+    parse_config,
+)
 from prototype.prototype.utils.ema import EMA
 from prototype.prototype.model import model_entry
 from prototype.prototype.optimizer import optim_entry
 from prototype.prototype.lr_scheduler import scheduler_entry
-from prototype.prototype.data import build_imagenet_train_dataloader, build_imagenet_test_dataloader
+from prototype.prototype.data import (
+    build_imagenet_train_dataloader,
+    build_imagenet_test_dataloader,
+)
 from prototype.prototype.data import build_custom_dataloader
 from prototype.prototype.loss_functions import LabelSmoothCELoss
 from prototype.prototype.model import get_model_robust_dcit
@@ -27,47 +43,72 @@ import traceback
 import shutil
 import numpy as np
 import copy
-#from prototype.prototype.utils.user_analysis_helper import send_info
 
-#from prototype.spring.models import SPRING_MODELS_REGISTRY
+# from prototype.prototype.utils.user_analysis_helper import send_info
+
+# from prototype.spring.models import SPRING_MODELS_REGISTRY
 
 
 class MultiEvalSolver_P(BaseSolver):
 
     def __init__(self, config, model=None, prefix_name=None):
         self.prototype_info = EasyDict()
+        self.config = config
         if prefix_name is not None:
             self.prefix_name = prefix_name
         else:
             self.prefix_name = self.config.model.type
+
+        # Setup environment first to initialize self.state before build_model
+        self.setup_env()
+
         if model is not None:
             self.model = model
-            self.model.cuda()
+            # Move model to the correct GPU for this rank
+            # Note: dist_init already set the device, but ensure it's correct
+            device_id = self.dist.rank % torch.cuda.device_count()
+            torch.cuda.set_device(device_id)
+            self.model.cuda(device=device_id)
+            # Wrap with DistModule for distributed support
+            if not isinstance(self.model, DistModule):
+                self.model = DistModule(self.model, self.config.dist.sync)
         else:
             self.build_model()
-        self.config = config
-        self.setup_env()
-        self.check_rank()
+        # self.check_rank()  # Not needed for single GPU
         # self.build_model()
         # self.build_optimizer()
         # self.build_data()
         # self.build_lr_scheduler()
-        #send_info(self.prototype_info)
-        count_params(self.model)
-        count_flops(self.model, input_shape=[
-            1, 3, self.config.data.input_size, self.config.data.input_size])
+        # send_info(self.prototype_info)
+        # Synchronize all ranks before counting params/flops
+        if self.dist.world_size > 1:
+            link.barrier()
+        if self.dist.rank == 0:
+            count_params(self.model)
+            count_flops(
+                self.model,
+                input_shape=[
+                    1,
+                    3,
+                    self.config.data.input_size,
+                    self.config.data.input_size,
+                ],
+            )
 
     def setup_env(self):
         # dist
         self.dist = EasyDict()
-        self.dist.rank, self.dist.world_size = link.get_rank(), link.get_world_size()
+        self.dist.rank = link.get_rank()
+        self.dist.world_size = link.get_world_size()
         self.prototype_info.world_size = self.dist.world_size
         # directories
         self.path = EasyDict()
         self.path.root_path = os.getcwd()
-        self.path.save_path = os.path.join(self.path.root_path, 'checkpoints')
-        self.path.event_path = os.path.join(self.path.root_path, 'events')
-        self.path.result_path = os.path.join(self.path.root_path, self.prefix_name, 'results')
+        self.path.save_path = os.path.join(self.path.root_path, "checkpoints")
+        self.path.event_path = os.path.join(self.path.root_path, "events")
+        self.path.result_path = os.path.join(
+            self.path.root_path, self.prefix_name, "results"
+        )
         makedir(self.path.save_path)
         makedir(self.path.event_path)
         makedir(self.path.result_path)
@@ -75,46 +116,66 @@ class MultiEvalSolver_P(BaseSolver):
         if self.dist.rank == 0:
             self.tb_logger = SummaryWriter(self.path.event_path)
         # logger
-        create_logger(os.path.join(self.path.root_path, self.prefix_name, 'log.txt'))
+        create_logger(os.path.join(self.path.root_path, self.prefix_name, "log.txt"))
         self.logger = get_logger(__name__)
         # self.logger.info(f'config: {pprint.pformat(self.config)}')
-        if 'SLURM_NODELIST' in os.environ:
+        if "SLURM_NODELIST" in os.environ:
             self.logger.info(f"hostnames: {os.environ['SLURM_NODELIST']}")
         # load pretrain checkpoint
 
         self.state = {}
-        self.state['last_iter'] = 0
+        self.state["last_iter"] = 0
+        # fp16
+        self.fp16 = getattr(self.config, "fp16", False)
         # others
         torch.backends.cudnn.benchmark = True
 
     def check_rank(self):
         if self.dist.world_size > 7:
-            self.logger.warning("If your GPUs are on multi nodes, please use GPU on the same node."
-                                " Or a error will occur when load the imagenet-p data")
+            self.logger.warning(
+                "If your GPUs are on multi nodes, please use GPU on the same node."
+                " Or a error will occur when load the imagenet-p data"
+            )
 
     def build_model(self):
-        if hasattr(self.config, 'lms'):
+        if hasattr(self.config, "lms"):
             if self.config.lms.enable:
                 torch.cuda.set_enabled_lms(True)
                 byte_limit = self.config.lms.kwargs.limit * (1 << 30)
                 torch.cuda.set_limit_lms(byte_limit)
-                self.logger.info('Enable large model support, limit of {}G!'.format(
-                    self.config.lms.kwargs.limit))
+                self.logger.info(
+                    "Enable large model support, limit of {}G!".format(
+                        self.config.lms.kwargs.limit
+                    )
+                )
 
         self.model = model_entry(self.config.model)
         self.prototype_info.model = self.config.model.type
-        self.model.cuda()
+        # Move model to the correct GPU for this rank
+        device_id = self.dist.rank % torch.cuda.device_count()
+        torch.cuda.set_device(device_id)
+        self.model.cuda(device=device_id)
 
-        count_params(self.model)
-        count_flops(self.model, input_shape=[
-                    1, 3, self.config.data.input_size, self.config.data.input_size])
+        if self.dist.rank == 0:
+            count_params(self.model)
+            count_flops(
+                self.model,
+                input_shape=[
+                    1,
+                    3,
+                    self.config.data.input_size,
+                    self.config.data.input_size,
+                ],
+            )
 
         # handle fp16
-
+        # Synchronize all ranks before wrapping with DistModule
+        if self.dist.world_size > 1:
+            link.barrier()
         self.model = DistModule(self.model, self.config.dist.sync)
 
-        if 'model' in self.state:
-            load_state_model(self.model, self.state['model'])
+        if "model" in self.state:
+            load_state_model(self.model, self.state["model"])
 
     def build_optimizer(self):
 
@@ -125,14 +186,14 @@ class MultiEvalSolver_P(BaseSolver):
         # make param_groups
         pconfig = {}
 
-        if opt_config.get('no_wd', False):
-            pconfig['conv_b'] = {'weight_decay': 0.0}
-            pconfig['linear_b'] = {'weight_decay': 0.0}
-            pconfig['bn_w'] = {'weight_decay': 0.0}
-            pconfig['bn_b'] = {'weight_decay': 0.0}
+        if opt_config.get("no_wd", False):
+            pconfig["conv_b"] = {"weight_decay": 0.0}
+            pconfig["linear_b"] = {"weight_decay": 0.0}
+            pconfig["bn_w"] = {"weight_decay": 0.0}
+            pconfig["bn_b"] = {"weight_decay": 0.0}
 
-        if 'pconfig' in opt_config:
-            pconfig.update(opt_config['pconfig'])
+        if "pconfig" in opt_config:
+            pconfig.update(opt_config["pconfig"])
 
         param_group, type2num = param_group_all(self.model, pconfig)
 
@@ -140,8 +201,8 @@ class MultiEvalSolver_P(BaseSolver):
 
         self.optimizer = optim_entry(opt_config)
 
-        if 'optimizer' in self.state:
-            load_state_optimizer(self.optimizer, self.state['optimizer'])
+        if "optimizer" in self.state:
+            load_state_optimizer(self.optimizer, self.state["optimizer"])
 
         # EMA
         if self.config.ema.enable:
@@ -150,28 +211,28 @@ class MultiEvalSolver_P(BaseSolver):
         else:
             self.ema = None
 
-        if 'ema' in self.state:
-            self.ema.load_state_dict(self.state['ema'])
+        if "ema" in self.state:
+            self.ema.load_state_dict(self.state["ema"])
 
     def build_lr_scheduler(self):
         self.prototype_info.lr_scheduler = self.config.lr_scheduler.type
-        if not getattr(self.config.lr_scheduler.kwargs, 'max_iter', False):
+        if not getattr(self.config.lr_scheduler.kwargs, "max_iter", False):
             self.config.lr_scheduler.kwargs.max_iter = self.config.data.max_iter
         self.config.lr_scheduler.kwargs.optimizer = self.optimizer
-        self.config.lr_scheduler.kwargs.last_iter = self.state['last_iter']
+        self.config.lr_scheduler.kwargs.last_iter = self.state["last_iter"]
         self.lr_scheduler = scheduler_entry(self.config.lr_scheduler)
 
     def build_data(self):
-        self.config.data.last_iter = self.state['last_iter']
-        if getattr(self.config.lr_scheduler.kwargs, 'max_iter', False):
+        self.config.data.last_iter = self.state["last_iter"]
+        if getattr(self.config.lr_scheduler.kwargs, "max_iter", False):
             self.config.data.max_iter = self.config.lr_scheduler.kwargs.max_iter
         else:
             self.config.data.max_epoch = self.config.lr_scheduler.kwargs.max_epoch
 
-        if self.config.data.get('type', 'imagenet') == 'imagenet':
+        if self.config.data.get("type", "imagenet") == "imagenet":
             self.val_data = build_imagenet_test_dataloader(self.config.data)
         else:
-            self.val_data = build_custom_dataloader('test', self.config.data)
+            self.val_data = build_custom_dataloader("test", self.config.data)
 
     def pre_train(self):
         self.meters = EasyDict()
@@ -184,35 +245,39 @@ class MultiEvalSolver_P(BaseSolver):
 
         self.model.train()
 
-        label_smooth = self.config.get('label_smooth', 0.0)
-        self.num_classes = self.config.model.kwargs.get('num_classes', 1000)
+        label_smooth = self.config.get("label_smooth", 0.0)
+        self.num_classes = self.config.model.kwargs.get("num_classes", 1000)
         self.topk = 5 if self.num_classes >= 5 else self.num_classes
         if label_smooth > 0:
-            self.logger.info('using label_smooth: {}'.format(label_smooth))
+            self.logger.info("using label_smooth: {}".format(label_smooth))
             self.criterion = LabelSmoothCELoss(label_smooth, self.num_classes)
         else:
             self.criterion = torch.nn.CrossEntropyLoss()
-        self.mixup = self.config.get('mixup', 1.0)
-        self.cutmix = self.config.get('cutmix', 0.0)
+        self.mixup = self.config.get("mixup", 1.0)
+        self.cutmix = self.config.get("cutmix", 0.0)
         self.switch_prob = 0.0
         if self.mixup < 1.0:
-            self.logger.info('using mixup with alpha of: {}'.format(self.mixup))
+            self.logger.info("using mixup with alpha of: {}".format(self.mixup))
         if self.cutmix > 0.0:
-            self.logger.info('using cutmix with alpha of: {}'.format(self.cutmix))
+            self.logger.info("using cutmix with alpha of: {}".format(self.cutmix))
         if self.mixup < 1.0 and self.cutmix > 0.0:
             # the probability of switching mixup to cutmix if both are activated
-            self.switch_prob = self.config.get('switch_prob', 0.5)
-            self.logger.info('switching between mixup and cutmix with probility of: {}'.format(self.switch_prob))
+            self.switch_prob = self.config.get("switch_prob", 0.5)
+            self.logger.info(
+                "switching between mixup and cutmix with probility of: {}".format(
+                    self.switch_prob
+                )
+            )
 
     def train(self):
 
         self.pre_train()
-        total_step = len(self.train_data['loader'])
-        start_step = self.state['last_iter'] + 1
+        total_step = len(self.train_data["loader"])
+        start_step = self.state["last_iter"] + 1
         end = time.time()
-        for i, batch in enumerate(self.train_data['loader']):
-            input = batch['image']
-            target = batch['label']
+        for i, batch in enumerate(self.train_data["loader"]):
+            input = batch["image"]
+            target = batch["label"]
             curr_step = start_step + i
             self.lr_scheduler.step(curr_step)
             # lr_scheduler.get_lr()[0] is the main lr
@@ -261,21 +326,27 @@ class MultiEvalSolver_P(BaseSolver):
 
             # training logger
             if curr_step % self.config.saver.print_freq == 0 and self.dist.rank == 0:
-                self.tb_logger.add_scalar('loss_train', self.meters.losses.avg, curr_step)
-                self.tb_logger.add_scalar('acc1_train', self.meters.top1.avg, curr_step)
-                self.tb_logger.add_scalar('acc5_train', self.meters.top5.avg, curr_step)
-                self.tb_logger.add_scalar('lr', current_lr, curr_step)
+                self.tb_logger.add_scalar(
+                    "loss_train", self.meters.losses.avg, curr_step
+                )
+                self.tb_logger.add_scalar("acc1_train", self.meters.top1.avg, curr_step)
+                self.tb_logger.add_scalar("acc5_train", self.meters.top5.avg, curr_step)
+                self.tb_logger.add_scalar("lr", current_lr, curr_step)
                 remain_secs = (total_step - curr_step) * self.meters.batch_time.avg
                 remain_time = datetime.timedelta(seconds=round(remain_secs))
-                finish_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()+remain_secs))
-                log_msg = f'Iter: [{curr_step}/{total_step}]\t' \
-                    f'Time {self.meters.batch_time.val:.3f} ({self.meters.batch_time.avg:.3f})\t' \
-                    f'Data {self.meters.data_time.val:.3f} ({self.meters.data_time.avg:.3f})\t' \
-                    f'Loss {self.meters.losses.val:.4f} ({self.meters.losses.avg:.4f})\t' \
-                    f'Prec@1 {self.meters.top1.val:.3f} ({self.meters.top1.avg:.3f})\t' \
-                    f'Prec@5 {self.meters.top5.val:.3f} ({self.meters.top5.avg:.3f})\t' \
-                    f'LR {current_lr:.4f}\t' \
-                    f'Remaining Time {remain_time} ({finish_time})'
+                finish_time = time.strftime(
+                    "%Y-%m-%d %H:%M:%S", time.localtime(time.time() + remain_secs)
+                )
+                log_msg = (
+                    f"Iter: [{curr_step}/{total_step}]\t"
+                    f"Time {self.meters.batch_time.val:.3f} ({self.meters.batch_time.avg:.3f})\t"
+                    f"Data {self.meters.data_time.val:.3f} ({self.meters.data_time.avg:.3f})\t"
+                    f"Loss {self.meters.losses.val:.4f} ({self.meters.losses.avg:.4f})\t"
+                    f"Prec@1 {self.meters.top1.val:.3f} ({self.meters.top1.avg:.3f})\t"
+                    f"Prec@5 {self.meters.top5.val:.3f} ({self.meters.top5.avg:.3f})\t"
+                    f"LR {current_lr:.4f}\t"
+                    f"Remaining Time {remain_time} ({finish_time})"
+                )
                 self.logger.info(log_msg)
 
             # testing during training
@@ -285,28 +356,44 @@ class MultiEvalSolver_P(BaseSolver):
                     self.ema.load_ema(self.model)
                     ema_metrics = self.evaluate()
                     self.ema.recover(self.model)
-                    if self.dist.rank == 0 and self.config.data.test.evaluator.type == 'imagenet':
-                        metric_key = 'top{}'.format(self.topk)
-                        self.tb_logger.add_scalars('acc1_val', {'ema': ema_metrics.metric['top1']}, curr_step)
-                        self.tb_logger.add_scalars('acc5_val', {'ema': ema_metrics.metric[metric_key]}, curr_step)
+                    if (
+                        self.dist.rank == 0
+                        and self.config.data.test.evaluator.type == "imagenet"
+                    ):
+                        metric_key = "top{}".format(self.topk)
+                        self.tb_logger.add_scalars(
+                            "acc1_val", {"ema": ema_metrics.metric["top1"]}, curr_step
+                        )
+                        self.tb_logger.add_scalars(
+                            "acc5_val",
+                            {"ema": ema_metrics.metric[metric_key]},
+                            curr_step,
+                        )
 
                 # testing logger
-                if self.dist.rank == 0 and self.config.data.test.evaluator.type == 'imagenet':
-                    metric_key = 'top{}'.format(self.topk)
-                    self.tb_logger.add_scalar('acc1_val', metrics.metric['top1'], curr_step)
-                    self.tb_logger.add_scalar('acc5_val', metrics.metric[metric_key], curr_step)
+                if (
+                    self.dist.rank == 0
+                    and self.config.data.test.evaluator.type == "imagenet"
+                ):
+                    metric_key = "top{}".format(self.topk)
+                    self.tb_logger.add_scalar(
+                        "acc1_val", metrics.metric["top1"], curr_step
+                    )
+                    self.tb_logger.add_scalar(
+                        "acc5_val", metrics.metric[metric_key], curr_step
+                    )
 
                 # save ckpt
                 if self.dist.rank == 0:
                     if self.config.saver.save_many:
-                        ckpt_name = f'{self.path.save_path}/ckpt_{curr_step}.pth.tar'
+                        ckpt_name = f"{self.path.save_path}/ckpt_{curr_step}.pth.tar"
                     else:
-                        ckpt_name = f'{self.path.save_path}/ckpt.pth.tar'
-                    self.state['model'] = self.model.state_dict()
-                    self.state['optimizer'] = self.optimizer.state_dict()
-                    self.state['last_iter'] = curr_step
+                        ckpt_name = f"{self.path.save_path}/ckpt.pth.tar"
+                    self.state["model"] = self.model.state_dict()
+                    self.state["optimizer"] = self.optimizer.state_dict()
+                    self.state["last_iter"] = curr_step
                     if self.ema is not None:
-                        self.state['ema'] = self.ema.state_dict()
+                        self.state["ema"] = self.ema.state_dict()
                     torch.save(self.state, ckpt_name)
 
             end = time.time()
@@ -323,7 +410,8 @@ class MultiEvalSolver_P(BaseSolver):
 
                 for pred in vid_preds[i::step_size][1:]:
                     result_for_vid.append(int(prev_pred != pred))
-                    if not noise_perturbation: prev_pred = pred
+                    if not noise_perturbation:
+                        prev_pred = pred
 
             result += np.mean(result_for_vid) / len(predictions)
 
@@ -332,112 +420,162 @@ class MultiEvalSolver_P(BaseSolver):
     @torch.no_grad()
     def evaluate(self):
         self.model.eval()
+        # Ensure all ranks are synchronized before evaluation
+        if self.dist.world_size > 1:
+            link.barrier()
         imagenetp_flag = self.config.data.test.get("imagenet_p", False)
         root_dir = self.config.data.test.root_dir
 
-        assert imagenetp_flag, 'This solver is only for imagenet-p'
+        assert imagenetp_flag, "This solver is only for imagenet-p"
 
-        perturbation_list = ['brightness', 'motion_blur', 'zoom_blur',
-                             'spatter', 'translate', 'rotate', 'tilt', 'scale',
-                             'speckle_noise', 'gaussian_blur', 'snow', 'shear', 'shot_noise']
+        fp_list = []
+        perturbation_list = [
+            "brightness",
+            "motion_blur",
+            "zoom_blur",
+            "spatter",
+            "translate",
+            "rotate",
+            "tilt",
+            "scale",
+            "speckle_noise",
+            "gaussian_blur",
+            "snow",
+            "shear",
+            "shot_noise",
+        ]
 
-        #perturbation_list = ['gaussian_noise']
+        # perturbation_list = ['gaussian_noise']
         for perturbation in perturbation_list:
-            res_file = os.path.join(self.path.result_path, f'{perturbation}-results.txt.rank{self.dist.rank}')
-            writer = open(res_file, 'w')
-
+            res_file = os.path.join(
+                self.path.result_path,
+                f"{perturbation}-results.txt.rank{self.dist.rank}",
+            )
+            writer = open(res_file, "w")
 
             self.config.data.test.root_dir = os.path.join(root_dir, perturbation)
             self.build_data()
 
-            predictions, ranks = [], []
-            for data, target in self.val_data['loader']:
+            for data, target in self.val_data["loader"]:
                 num_vids = data.size(0)
-                data = data.view(-1, 3, 224, 224).cuda()
+                # Move data to the correct GPU for this rank
+                device_id = self.dist.rank % torch.cuda.device_count()
+                data = data.view(-1, 3, 224, 224).cuda(device=device_id)
                 output = self.model(data)
 
                 for vid in output.view(num_vids, -1, 1000):
-                    predictions = vid.argmax(1).to('cpu').numpy().tolist()
-                    res = {'predictions': predictions}
-                    writer.write(json.dumps(res, ensure_ascii=False) + '\n')
-                    # predictions.append(vid.argmax(1).to('cpu').numpy())
-                    #ranks.append([np.uint16(rankdata(-frame, method='ordinal')) for frame in vid.to('cpu').numpy()])
-            #ranks = np.asarray(ranks)
+                    vid_predictions = vid.argmax(1).to("cpu").numpy().tolist()
+                    res = {"predictions": vid_predictions}
+                    writer.write(json.dumps(res, ensure_ascii=False) + "\n")
+                    # Note: predictions and ranks were previously collected here but are now written directly to file
 
             writer.flush()
             writer.close()
-            link.barrier()
 
-            # get fp
+            if self.dist.world_size > 1:
+                link.barrier()
+
+            # get fp - merge multi-rank results on rank 0
             if self.dist.rank == 0:
-                prefix = res_file.rstrip('0123456789')
-                world_size = link.get_world_size()
-                merged_file = prefix.rsplit('.', 1)[0] + '.all'
-                merged_fd = open(merged_file, 'w')
-                for rank in range(world_size):
-                    res_file = prefix + str(rank)
-                    assert os.path.exists(res_file), f'No such file or directory: {res_file}'
-                    with open(res_file, 'r') as fin:
-                        for line_idx, line in enumerate(fin):
-                            merged_fd.write(line)
-                merged_fd.close()
+                # Construct the base filename without rank suffix
+                base_file = res_file.replace(f".rank{self.dist.rank}", "")
+                merged_file = base_file + ".all"
+                if self.dist.world_size == 1:
+                    # Single GPU: directly use the result file as merged file
+                    import shutil
+
+                    shutil.copy(res_file, merged_file)
+                else:
+                    with open(merged_file, "w") as merged_fp:
+                        for rank_id in range(self.dist.world_size):
+                            part_file = base_file + f".rank{rank_id}"
+                            if not os.path.exists(part_file):
+                                self.logger.warning(
+                                    f"Result file not found for rank {rank_id}: {part_file}"
+                                )
+                                continue
+                            with open(part_file) as part_fp:
+                                merged_fp.writelines(part_fp.readlines())
 
                 pre_res = []
                 with open(merged_file) as f:
                     lines = f.readlines()
                 for line in lines:
-                    one_pre = json.loads(line)['predictions']
+                    one_pre = json.loads(line)["predictions"]
                     pre_res.append(np.array(one_pre))
 
-                self.fp = self.flip_prob(pre_res, noise_perturbation=True if 'noise' in perturbation else False)
-                self.logger.info(f'Model: {self.prefix_name} Perturbation: {perturbation}')
-                self.logger.info('Flipping Prob\t{:.5f}'.format(self.fp))
+                self.fp = self.flip_prob(
+                    pre_res,
+                    noise_perturbation=True if "noise" in perturbation else False,
+                )
+                self.logger.info(
+                    f"Model: {self.prefix_name} Perturbation: {perturbation}"
+                )
+                self.logger.info("Flipping Prob\t{:.5f}".format(self.fp))
+                fp_list.append(self.fp)
 
-            link.barrier()
+            if self.dist.world_size > 1:
+                link.barrier()
 
-
+        if self.dist.rank == 0 and fp_list:
+            fp_mean = float(np.mean(fp_list))
+            fp_neg_mean = -fp_mean
+            out_path = os.path.join(self.path.result_path, "flip_prob_neg_mean.json")
+            with open(out_path, "w") as f:
+                json.dump(
+                    {
+                        "flip_prob_mean": fp_mean,
+                        "flip_prob_neg_mean": fp_neg_mean,
+                    },
+                    f,
+                    indent=2,
+                )
 
 
 @link_dist
 def main():
-    parser = argparse.ArgumentParser(description='Classification Solver')
-    parser.add_argument('--config', required=True, type=str)
-    parser.add_argument('--evaluate', action='store_true')
-    parser.add_argument('--save-detail', action='store_true')   # will use over 100G disk pre model
-    parser.add_argument('--ckpt-filePath', default='/mnt/lustre/share/robust/ckpt_all')
+    parser = argparse.ArgumentParser(description="Classification Solver")
+    parser.add_argument("--config", required=True, type=str)
+    parser.add_argument("--evaluate", action="store_true")
+    parser.add_argument(
+        "--save-detail", action="store_true"
+    )  # will use over 100G disk pre model
+    parser.add_argument("--ckpt-filePath", default="/mnt/lustre/share/robust/ckpt_all")
 
     args = parser.parse_args()
     # build solver
     config = parse_config(args.config)
-    #model_list = config['eval_list']
-    model_dict = get_model_robust_baseline()
-    model_dict_trick = get_model_robust_trick()
-    model_dict.update(model_dict_trick)
-
-    model_dict = get_efficient()
     status = open("status.txt", "a")
 
-
-    if hasattr(config, 'eval_list'):
-        test_name_list = config['eval_list']
+    if hasattr(config, "eval_list"):
+        test_name_list = config["eval_list"]
         model_dict = get_model_robust_dcit()
         for model_name in test_name_list:
             file_path = args.ckpt_filePath
-            ckpt_path = os.path.join(file_path, model_name + '.pth.tar')
+            ckpt_path = os.path.join(file_path, model_name + ".pth.tar")
             try:
                 model = model_dict[model_name]
-                print('Loading pretrain model for ' + model_name)
-                state = torch.load(ckpt_path, 'cpu')
+                if link.get_rank() == 0:
+                    print("Loading pretrain model for " + model_name)
+                state = torch.load(ckpt_path, "cpu")
                 # state = modify_state(state, EasyDict())
-                for key in list(state['model'].keys()):
-                    if 'module.' in key:
-                        state['model'][key.split('module.')[1]] = state['model'].pop(key)
-                load_state_model(model, state['model'])
+                for key in list(state["model"].keys()):
+                    if "module." in key:
+                        state["model"][key.split("module.")[1]] = state["model"].pop(
+                            key
+                        )
+                load_state_model(model, state["model"])
+                # Synchronize all ranks after model loading
+                if link.get_world_size() > 1:
+                    link.barrier()
             except:
-                print("Error when load " + model_name)
-                print(traceback.format_exc())
-                status.write(f"Error when load {model_name}, skip it.\n")
-                status.write(traceback.format_exc())
+                if link.get_rank() == 0:
+                    print("Error when load " + model_name)
+                    print(traceback.format_exc())
+                    status.write(f"Error when load {model_name}, skip it.\n")
+                    status.write(traceback.format_exc())
+                if link.get_world_size() > 1:
+                    link.barrier()
                 continue
 
             solver = MultiEvalSolver_P(config, model, model_name)
@@ -456,7 +594,8 @@ def main():
 
     status.close()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
 
 # if 'efficientnet' in model_name:

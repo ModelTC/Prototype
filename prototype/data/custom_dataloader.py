@@ -14,52 +14,55 @@ def build_custom_dataloader(data_type, cfg_dataset):
     """
     assert data_type in cfg_dataset
     # build transformer
-    image_reader = cfg_dataset[data_type].get('image_reader', {})
-    transformer = build_transformer(cfgs=cfg_dataset[data_type]['transforms'],
-                                    image_reader=image_reader)
+    image_reader = cfg_dataset[data_type].get("image_reader", {})
+    transformer = build_transformer(
+        cfgs=cfg_dataset[data_type]["transforms"], image_reader=image_reader
+    )
     # build evaluator
     evaluator = None
-    if data_type == 'test' and cfg_dataset[data_type].get('evaluator', None):
-        evaluator = build_evaluator(cfg_dataset[data_type]['evaluator'])
+    if data_type == "test" and cfg_dataset[data_type].get("evaluator", None):
+        evaluator = build_evaluator(cfg_dataset[data_type]["evaluator"])
     # build dataset
-    if cfg_dataset['type'] == 'custom':
+    if cfg_dataset["type"] == "custom":
         CurrDataset = CustomDataset
-    elif cfg_dataset['type'] == 'multiclass':
+    elif cfg_dataset["type"] == "multiclass":
         raise NotImplementedError
     else:
         raise NotImplementedError
 
-    if cfg_dataset['read_from'] == 'osg':
+    if cfg_dataset["read_from"] == "osg":
         dataset = CurrDataset(
-            root_dir='',
-            meta_file=cfg_dataset[data_type]['meta_file'],
+            root_dir="",
+            meta_file=cfg_dataset[data_type]["meta_file"],
             transform=transformer,
-            read_from='osg',
+            read_from="osg",
             evaluator=evaluator,
-            image_reader_type=image_reader.get('type', 'pil'),
-            osg_server=cfg_dataset[data_type]['osg_server'],
+            image_reader_type=image_reader.get("type", "pil"),
+            osg_server=cfg_dataset[data_type]["osg_server"],
         )
     else:
         dataset = CurrDataset(
-            root_dir=cfg_dataset[data_type]['root_dir'],
-            meta_file=cfg_dataset[data_type]['meta_file'],
+            root_dir=cfg_dataset[data_type]["root_dir"],
+            meta_file=cfg_dataset[data_type]["meta_file"],
             transform=transformer,
-            read_from=cfg_dataset['read_from'],
+            read_from=cfg_dataset["read_from"],
             evaluator=evaluator,
-            image_reader_type=image_reader.get('type', 'pil')
+            image_reader_type=image_reader.get("type", "pil"),
         )
     # initialize kwargs of sampler
-    cfg_dataset[data_type]['sampler']['kwargs'] = {}
-    cfg_dataset['dataset'] = dataset
+    cfg_dataset[data_type]["sampler"]["kwargs"] = {}
+    cfg_dataset["dataset"] = dataset
     # build sampler
-    sampler = build_sampler(cfg_dataset[data_type]['sampler'], cfg_dataset)
-    if data_type == 'train' and cfg_dataset['last_iter'] >= cfg_dataset['max_iter']:
-        return {'loader': None}
+    sampler = build_sampler(cfg_dataset[data_type]["sampler"], cfg_dataset)
+    if data_type == "train" and cfg_dataset["last_iter"] >= cfg_dataset["max_iter"]:
+        return {"loader": None}
     # build dataloader
-    loader = DataLoader(dataset=dataset,
-                        batch_size=cfg_dataset['batch_size'],
-                        shuffle=False if sampler is not None else True,
-                        num_workers=cfg_dataset['num_workers'],
-                        pin_memory=cfg_dataset['pin_memory'],
-                        sampler=sampler)
-    return {'type': data_type, 'loader': loader}
+    loader = DataLoader(
+        dataset=dataset,
+        batch_size=cfg_dataset["batch_size"],
+        shuffle=False if sampler is not None else True,
+        num_workers=cfg_dataset["num_workers"],
+        pin_memory=cfg_dataset["pin_memory"],
+        sampler=sampler,
+    )
+    return {"type": data_type, "loader": loader}

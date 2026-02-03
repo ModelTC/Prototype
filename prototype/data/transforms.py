@@ -4,8 +4,9 @@ from PIL import ImageFilter
 import torch
 import torchvision.transforms as transforms
 import torchvision.transforms.functional as TF
-#import springvision
-#from .register_factory import TRANSFORM
+
+# import springvision
+# from .register_factory import TRANSFORM
 
 
 class ToGrayscale(object):
@@ -44,7 +45,7 @@ class TwoCropsTransform:
 class GaussianBlur(object):
     """Gaussian blur augmentation in SimCLR https://arxiv.org/abs/2002.05709"""
 
-    def __init__(self, sigma=[.1, 2.]):
+    def __init__(self, sigma=[0.1, 2.0]):
         self.sigma = sigma
 
     def __call__(self, x):
@@ -73,7 +74,7 @@ class Cutout(object):
                 y2 = np.clip(y + self.length // 2, 0, h)
                 x1 = np.clip(x - self.length // 2, 0, w)
                 x2 = np.clip(x + self.length // 2, 0, w)
-                mask[y1:y2, x1:x2] = 0.
+                mask[y1:y2, x1:x2] = 0.0
 
             mask = torch.from_numpy(mask)
             mask = mask.expand_as(img)
@@ -94,24 +95,24 @@ class RandomOrientationRotation(object):
 
 
 torch_transforms_info_dict = {
-    'resize': transforms.Resize,
-    'center_crop': transforms.CenterCrop,
-    'random_resized_crop': transforms.RandomResizedCrop,
-    'random_horizontal_flip': transforms.RandomHorizontalFlip,
-    'ramdom_vertical_flip': transforms.RandomVerticalFlip,
-    'random_rotation': transforms.RandomRotation,
-    'color_jitter': transforms.ColorJitter,
-    'normalize': transforms.Normalize,
-    'to_tensor': transforms.ToTensor,
-    'adjust_gamma': AdjustGamma,
-    'to_grayscale': ToGrayscale,
-    'cutout': Cutout,
-    'random_orientation_rotation': RandomOrientationRotation,
-    'gaussian_blur': GaussianBlur,
-    'compose': transforms.Compose,
+    "resize": transforms.Resize,
+    "center_crop": transforms.CenterCrop,
+    "random_resized_crop": transforms.RandomResizedCrop,
+    "random_horizontal_flip": transforms.RandomHorizontalFlip,
+    "ramdom_vertical_flip": transforms.RandomVerticalFlip,
+    "random_rotation": transforms.RandomRotation,
+    "color_jitter": transforms.ColorJitter,
+    "normalize": transforms.Normalize,
+    "to_tensor": transforms.ToTensor,
+    "adjust_gamma": AdjustGamma,
+    "to_grayscale": ToGrayscale,
+    "cutout": Cutout,
+    "random_orientation_rotation": RandomOrientationRotation,
+    "gaussian_blur": GaussianBlur,
+    "compose": transforms.Compose,
 }
 
-#kestrel_transforms_info_dict = {
+# kestrel_transforms_info_dict = {
 #    'resize': springvision.Resize,
 #    'random_resized_crop': springvision.RandomResizedCrop,
 #    'random_crop': springvision.RandomCrop,
@@ -123,7 +124,7 @@ torch_transforms_info_dict = {
 #    'to_grayscale': springvision.ToGrayscale,
 #    'compose': springvision.Compose,
 #    'random_horizontal_flip': springvision.RandomHorizontalFlip
-#}
+# }
 
 
 def build_transformer(cfgs, image_reader={}):
@@ -131,13 +132,37 @@ def build_transformer(cfgs, image_reader={}):
     transforms_info_dict = torch_transforms_info_dict
 
     for cfg in cfgs:
-        transform_type = transforms_info_dict[cfg['type']]
-        kwargs = cfg['kwargs'] if 'kwargs' in cfg else {}
+        # Convert CamelCase to snake_case (e.g., RandomResizedCrop -> random_resized_crop)
+        transform_type_name = cfg["type"]
+        if transform_type_name not in transforms_info_dict:
+            # Try converting CamelCase to snake_case
+            import re
+
+            snake_case = re.sub(r"(?<!^)(?=[A-Z])", "_", transform_type_name).lower()
+            if snake_case in transforms_info_dict:
+                transform_type_name = snake_case
+            else:
+                raise KeyError(
+                    f"Transform type '{cfg['type']}' not found. Available types: {list(transforms_info_dict.keys())}"
+                )
+        transform_type = transforms_info_dict[transform_type_name]
+        kwargs = cfg["kwargs"] if "kwargs" in cfg else {}
+        # Filter out unsupported parameters for standard torchvision transforms
+        # Resize doesn't support 'mode' and 'backend' parameters
+        if transform_type_name == "resize":
+            # Keep only valid Resize parameters (size, interpolation)
+            filtered_kwargs = {
+                k: v
+                for k, v in kwargs.items()
+                if k in ("size", "interpolation", "max_size", "antialias")
+            }
+            kwargs = filtered_kwargs
         transform = transform_type(**kwargs)
         transform_list.append(transform)
-    return transforms_info_dict['compose'](transform_list)
+    return transforms_info_dict["compose"](transform_list)
 
-#def build_transformer(cfgs, image_reader={}):
+
+# def build_transformer(cfgs, image_reader={}):
 #    transform_list = []
 #    for cfg in cfgs:
 #        kwargs = cfg['kwargs'] if 'kwargs' in cfg else {}

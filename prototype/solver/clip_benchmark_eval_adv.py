@@ -84,8 +84,6 @@ class ClsSolver(BaseSolver):
         if hasattr(self.config.saver, "pretrain"):
             self.state_src = torch.load(self.config.saver.pretrain.path_src, "cpu",weights_only=False)
             self.state_tgt = torch.load(self.config.saver.pretrain.path_tgt, "cpu",weights_only=False)
-            # self.state_src = torch.load(self.config.saver.pretrain.path_src, "cpu")
-            # self.state_tgt = torch.load(self.config.saver.pretrain.path_tgt, "cpu")
             # self.logger.info(
             #     f"source model: Recovering from {self.config.saver.pretrain.path_src}, keys={list(self.state_src.keys())}"
             # # )
@@ -112,7 +110,8 @@ class ClsSolver(BaseSolver):
                         self.config.lms.kwargs.limit
                     )
                 )
-
+        self.config.model_src['use_pretrain_path']=True
+        self.config.model_tgt['use_pretrain_path']=True
         self.model_src = model_entry(self.config.model_src)
         self.model_tgt = model_entry(self.config.model_tgt)
         self.prototype_info.model_src = self.config.model_src.type
@@ -158,20 +157,21 @@ class ClsSolver(BaseSolver):
             link.fp16.init()
             self.model.half()
 
+        # if 'model' in self.state_src:
+        #     load_state_model(self.model_src, self.state_src["model"])
+        #     load_state_model(self.model_tgt, self.state_tgt["model"])
+        # else:
 
-        if 'model' in self.state_src:
-            load_state_model(self.model_src, self.state_src["model"])
-            load_state_model(self.model_tgt, self.state_tgt["model"])
-        else:
-
-            load_state_model(self.model_src, self.state_src)
-            load_state_model(self.model_tgt, self.state_tgt)
+        #     load_state_model(self.model_src, self.state_src)
+        #     load_state_model(self.model_tgt, self.state_tgt)
         self.model_src = DistModule(self.model_src, self.config.dist.sync)
         self.model_tgt = DistModule(self.model_tgt, self.config.dist.sync)
-
+        # load_state_model(self.model_src, self.state_src["model"])
+        # load_state_model(self.model_tgt, self.state_tgt["model"])
+        # load_state_model(self.model_src, self.state_src)
+        # load_state_model(self.model_tgt, self.state_tgt)
 
     def build_data(self):
-        # self.config.data.last_iter = self.state_tgt["last_iter"]
         self.config.data.last_iter = 0
         if getattr(self.config.lr_scheduler.kwargs, "max_iter", False):
             self.config.data.max_iter = self.config.lr_scheduler.kwargs.max_iter

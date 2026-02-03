@@ -5,7 +5,7 @@ except ImportError:
 
 
 class Metric(SCIMetric):
-    def __init__(self, metric={}, cmp_key=''):
+    def __init__(self, metric={}, cmp_key=""):
         if SCIMetric != object:
             super(Metric, self).__init__(metric.get(cmp_key, -1))
         self.metric = metric

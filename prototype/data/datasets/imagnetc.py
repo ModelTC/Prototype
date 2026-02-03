@@ -7,7 +7,8 @@ from prettytable import PrettyTable
 import numpy as np
 from prototype.prototype.utils.misc import get_logger
 from prototype.prototype.data.image_reader import build_image_reader
-#from prototype.spring.data import IMAGE_READER, IMAGE_DECODER
+
+# from prototype.spring.data import IMAGE_READER, IMAGE_DECODER
 
 
 class ImageNet_C_Dataset(BaseDataset):
@@ -27,17 +28,24 @@ class ImageNet_C_Dataset(BaseDataset):
         "n01440764/n01440764_10026.JPEG 0\n"
     """
 
-    def __init__(self, root_dir, meta_file, transform=None,
-                 read_from='mc', evaluator=None, image_reader_type='pil',
-                 server_cfg={}):
+    def __init__(
+        self,
+        root_dir,
+        meta_file,
+        transform=None,
+        read_from="mc",
+        evaluator=None,
+        image_reader_type="pil",
+        server_cfg={},
+    ):
 
         self.root_dir = root_dir
         self.meta_file = meta_file
         self.read_from = read_from
         self.transform = transform
         self.evaluator = evaluator
-        #self.image_reader = IMAGE_READER['mc']()
-        #self.image_decoder = IMAGE_DECODER[image_reader_type]()
+        # self.image_reader = IMAGE_READER['mc']()
+        # self.image_decoder = IMAGE_DECODER[image_reader_type]()
         self.image_reader = build_image_reader(image_reader_type)
         self.initialized = False
         self.use_server = False
@@ -56,18 +64,22 @@ class ImageNet_C_Dataset(BaseDataset):
 
                     for line in lines:
                         data = json.loads(line)
-                        data.update({
-                            "noise": noise,
-                            "noise_type": noise_type,
-                            "severity": int(severity)
-                        })
+                        data.update(
+                            {
+                                "noise": noise,
+                                "noise_type": noise_type,
+                                "severity": int(severity),
+                            }
+                        )
                         self.metas.append(data)
         self.num = len(self.metas)
-        super(ImageNet_C_Dataset, self).__init__(root_dir=root_dir,
-                                                 meta_file=meta_file,
-                                                 read_from=read_from,
-                                                 transform=transform,
-                                                 evaluator=evaluator)
+        super(ImageNet_C_Dataset, self).__init__(
+            root_dir=root_dir,
+            meta_file=meta_file,
+            read_from=read_from,
+            transform=transform,
+            evaluator=evaluator,
+        )
 
     def __len__(self):
         return self.num
@@ -77,10 +89,10 @@ class ImageNet_C_Dataset(BaseDataset):
 
     def __getitem__(self, idx):
         curr_meta = self._load_meta(idx)
-        filename = osp.join(self.root_dir, curr_meta['filename'])
-        label = int(curr_meta['label'])
+        filename = osp.join(self.root_dir, curr_meta["filename"])
+        label = int(curr_meta["label"])
         # add root_dir to filename
-        curr_meta['filename'] = filename
+        curr_meta["filename"] = filename
         img_bytes = self.read_file(curr_meta)
         img = self.image_reader(img_bytes, filename)
 
@@ -92,51 +104,51 @@ class ImageNet_C_Dataset(BaseDataset):
             img = self.transform(img)
 
         item = {
-            'image': img,
-            'label': label,
-            'image_id': idx,
-            'filename': filename,
+            "image": img,
+            "label": label,
+            "image_id": idx,
+            "filename": filename,
             "noise": curr_meta["noise"],
             "noise_type": curr_meta["noise_type"],
-            "severity": curr_meta["severity"]
+            "severity": curr_meta["severity"],
         }
         return item
 
     def dump(self, writer, output):
-        prediction = self.tensor2numpy(output['prediction'])
-        label = self.tensor2numpy(output['label'])
-        score = self.tensor2numpy(output['score'])
+        prediction = self.tensor2numpy(output["prediction"])
+        label = self.tensor2numpy(output["label"])
+        score = self.tensor2numpy(output["score"])
 
-        if 'filename' in output:
+        if "filename" in output:
             # pytorch type: {'image', 'label', 'filename', 'image_id'}
-            filename = output['filename']
-            image_id = output['image_id']
-            noise = self.tensor2numpy(output['noise'])
-            noise_type = self.tensor2numpy(output['noise_type'])
-            severity = self.tensor2numpy(output['severity'])
+            filename = output["filename"]
+            image_id = output["image_id"]
+            noise = self.tensor2numpy(output["noise"])
+            noise_type = self.tensor2numpy(output["noise_type"])
+            severity = self.tensor2numpy(output["severity"])
 
             for _idx in range(prediction.shape[0]):
                 res = {
-                    'filename': filename[_idx],
-                    'image_id': int(image_id[_idx]),
-                    'prediction': int(prediction[_idx]),
-                    'label': int(label[_idx]),
-                    'score': [float('%.8f' % s) for s in score[_idx]],
+                    "filename": filename[_idx],
+                    "image_id": int(image_id[_idx]),
+                    "prediction": int(prediction[_idx]),
+                    "label": int(label[_idx]),
+                    "score": [float("%.8f" % s) for s in score[_idx]],
                 }
 
                 writer[noise[_idx]][noise_type[_idx]][int(severity[_idx])].write(
-                    json.dumps(res, ensure_ascii=False) + '\n')
-                writer[noise[_idx]][noise_type[_idx]
-                                    ][int(severity[_idx])].flush()
+                    json.dumps(res, ensure_ascii=False) + "\n"
+                )
+                writer[noise[_idx]][noise_type[_idx]][int(severity[_idx])].flush()
         else:
             # dali type: {'image', 'label'}
             for _idx in range(prediction.shape[0]):
                 res = {
-                    'prediction': int(prediction[_idx]),
-                    'label': int(label[_idx]),
-                    'score': [float('%.8f' % s) for s in score[_idx]],
+                    "prediction": int(prediction[_idx]),
+                    "label": int(label[_idx]),
+                    "score": [float("%.8f" % s) for s in score[_idx]],
                 }
-                writer.write(json.dumps(res, ensure_ascii=False) + '\n')
+                writer.write(json.dumps(res, ensure_ascii=False) + "\n")
                 writer.flush()
 
     def evaluate(self, res_file):
@@ -145,11 +157,10 @@ class ImageNet_C_Dataset(BaseDataset):
             - res_file (:obj:`str`): filename of result
         """
 
-        prefix = res_file.rstrip('0123456789')
+        prefix = res_file.rstrip("0123456789")
 
         merged_res_file = self.merge(prefix)
-        metrics = self.evaluator.eval(
-            merged_res_file) if self.evaluator else {}
+        metrics = self.evaluator.eval(merged_res_file) if self.evaluator else {}
         return metrics
 
     def merge_eval_res(self, result_path):
@@ -158,23 +169,27 @@ class ImageNet_C_Dataset(BaseDataset):
             "all": {
                 "all_with_extra": {},
                 "all_without_extra": {},
-
             },
-            'noise': {'gaussian_noise': {}, 'shot_noise': {}, 'impulse_noise': {}},
-            'blur': {'defocus_blur': {},
-                     'glass_blur': {},
-                     'motion_blur': {},
-                     'zoom_blur': {}},
-            'weather': {'snow': {}, 'frost': {}, 'fog': {}, 'brightness': {}},
-            'digital': {'contrast': {},
-                        'elastic_transform': {},
-                        'pixelate': {},
-                        'jpeg_compression': {}},
-            'extra': {'speckle_noise': {},
-                      'spatter': {},
-                      'gaussian_blur': {},
-                      'saturate': {}},
-
+            "noise": {"gaussian_noise": {}, "shot_noise": {}, "impulse_noise": {}},
+            "blur": {
+                "defocus_blur": {},
+                "glass_blur": {},
+                "motion_blur": {},
+                "zoom_blur": {},
+            },
+            "weather": {"snow": {}, "frost": {}, "fog": {}, "brightness": {}},
+            "digital": {
+                "contrast": {},
+                "elastic_transform": {},
+                "pixelate": {},
+                "jpeg_compression": {},
+            },
+            "extra": {
+                "speckle_noise": {},
+                "spatter": {},
+                "gaussian_blur": {},
+                "saturate": {},
+            },
         }
 
         avg = []
@@ -187,7 +202,7 @@ class ImageNet_C_Dataset(BaseDataset):
                 for i in range(1, 6):
                     path = f"{result_path}/{noise}-{noise_type}-{i}-metric"
                     with open(path) as f:
-                        lst.append(100 - float(json.load(f)['top1']))
+                        lst.append(100 - float(json.load(f)["top1"]))
                 all_data[noise][noise_type] = np.average(lst)
                 if noise != "extra":
                     avg_wo_extra.append(np.average(lst))
@@ -215,8 +230,8 @@ class ImageNet_C_Dataset(BaseDataset):
                 rows.append(res[key][subkey])
 
             table.field_names = filed_list
-            table.align = 'c'
-            table.float_format = '.4'
+            table.align = "c"
+            table.float_format = ".4"
             table.title = key
             table.add_row(list(rows))
             table_lst.append(table)

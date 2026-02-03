@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import prototype.spring.linklink as link
 from prototype.prototype.utils.misc import get_bn
 
-__all__ = ['mobilenet_v3']
+__all__ = ["mobilenet_v3"]
 
 
 def _make_divisible(v, divisor, min_value=None):
@@ -30,17 +30,13 @@ def _make_divisible(v, divisor, min_value=None):
 
 def conv_bn(inp, oup, stride, activation=nn.ReLU):
     return nn.Sequential(
-        nn.Conv2d(inp, oup, 3, stride, 1, bias=False),
-        BN(oup),
-        activation(inplace=True)
+        nn.Conv2d(inp, oup, 3, stride, 1, bias=False), BN(oup), activation(inplace=True)
     )
 
 
 def conv_1x1_bn(inp, oup, activation=nn.ReLU):
     return nn.Sequential(
-        nn.Conv2d(inp, oup, 1, 1, 0, bias=False),
-        BN(oup),
-        activation(inplace=True)
+        nn.Conv2d(inp, oup, 1, 1, 0, bias=False), BN(oup), activation(inplace=True)
     )
 
 
@@ -50,7 +46,7 @@ class Hswish(nn.Module):
         self.inplace = inplace
 
     def forward(self, x):
-        return x * F.relu6(x + 3., inplace=self.inplace) / 6.
+        return x * F.relu6(x + 3.0, inplace=self.inplace) / 6.0
 
 
 class Hsigmoid(nn.Module):
@@ -59,7 +55,7 @@ class Hsigmoid(nn.Module):
         self.inplace = inplace
 
     def forward(self, x):
-        return F.relu6(x + 3., inplace=self.inplace) / 6.
+        return F.relu6(x + 3.0, inplace=self.inplace) / 6.0
 
 
 class SEModule(nn.Module):
@@ -70,7 +66,7 @@ class SEModule(nn.Module):
             nn.Linear(channel, channel // reduction, bias=False),
             nn.ReLU(inplace=True),
             nn.Linear(channel // reduction, channel, bias=False),
-            Hsigmoid()
+            Hsigmoid(),
         )
 
     def forward(self, x):
@@ -89,16 +85,16 @@ class Identity(nn.Module):
 
 
 class InvertedResidual(nn.Module):
-    def __init__(self, inp, oup, kernel, stride, exp, se=False, nl='RE'):
+    def __init__(self, inp, oup, kernel, stride, exp, se=False, nl="RE"):
         super(InvertedResidual, self).__init__()
         assert stride in [1, 2]
         assert kernel in [3, 5]
         padding = (kernel - 1) // 2
         self.use_res_connect = stride == 1 and inp == oup
 
-        if nl == 'RE':
+        if nl == "RE":
             activation = nn.ReLU
-        elif nl == 'HS':
+        elif nl == "HS":
             activation = Hswish
         else:
             raise NotImplementedError
@@ -108,22 +104,25 @@ class InvertedResidual(nn.Module):
         layers = []
         if inp != exp:
             # pw
-            layers.extend([
-                nn.Conv2d(inp, exp, 1, 1, 0, bias=False),
+            layers.extend(
+                [
+                    nn.Conv2d(inp, exp, 1, 1, 0, bias=False),
+                    BN(exp),
+                    activation(inplace=True),
+                ]
+            )
+        layers.extend(
+            [
+                # dw
+                nn.Conv2d(exp, exp, kernel, stride, padding, groups=exp, bias=False),
                 BN(exp),
+                SELayer(exp),
                 activation(inplace=True),
-            ])
-        layers.extend([
-            # dw
-            nn.Conv2d(exp, exp, kernel, stride,
-                      padding, groups=exp, bias=False),
-            BN(exp),
-            SELayer(exp),
-            activation(inplace=True),
-            # pw-linear
-            nn.Conv2d(exp, oup, 1, 1, 0, bias=False),
-            BN(oup),
-        ])
+                # pw-linear
+                nn.Conv2d(exp, oup, 1, 1, 0, bias=False),
+                BN(oup),
+            ]
+        )
         self.conv = nn.Sequential(*layers)
 
     def forward(self, x):
@@ -138,13 +137,16 @@ class MobileNetV3(nn.Module):
     MobileNet V3 main class, based on
     `"Searching for MobileNetV3" <https://arxiv.org/abs/1905.02244>`_
     """
-    def __init__(self,
-                 num_classes=1000,
-                 scale=1.0,
-                 dropout=0.8,
-                 round_nearest=8,
-                 mode='small',
-                 bn=None):
+
+    def __init__(
+        self,
+        num_classes=1000,
+        scale=1.0,
+        dropout=0.8,
+        round_nearest=8,
+        mode="small",
+        bn=None,
+    ):
         r"""
         Arguments:
             - num_classes (:obj:`int`): Number of classes
@@ -162,44 +164,47 @@ class MobileNetV3(nn.Module):
 
         input_channel = 16
         last_channel = 1280
-        if mode == 'large':
+        if mode == "large":
             mobile_setting = [
-                [3, 16,  16,  False, 'RE', 1],
-                [3, 64,  24,  False, 'RE', 2],
-                [3, 72,  24,  False, 'RE', 1],
-                [5, 72,  40,  True,  'RE', 2],
-                [5, 120, 40,  True,  'RE', 1],
-                [5, 120, 40,  True,  'RE', 1],
-                [3, 240, 80,  False, 'HS', 2],
-                [3, 200, 80,  False, 'HS', 1],
-                [3, 184, 80,  False, 'HS', 1],
-                [3, 184, 80,  False, 'HS', 1],
-                [3, 480, 112, True,  'HS', 1],
-                [3, 672, 112, True,  'HS', 1],
-                [5, 672, 160, True,  'HS', 2],
-                [5, 960, 160, True,  'HS', 1],
-                [5, 960, 160, True,  'HS', 1],
+                [3, 16, 16, False, "RE", 1],
+                [3, 64, 24, False, "RE", 2],
+                [3, 72, 24, False, "RE", 1],
+                [5, 72, 40, True, "RE", 2],
+                [5, 120, 40, True, "RE", 1],
+                [5, 120, 40, True, "RE", 1],
+                [3, 240, 80, False, "HS", 2],
+                [3, 200, 80, False, "HS", 1],
+                [3, 184, 80, False, "HS", 1],
+                [3, 184, 80, False, "HS", 1],
+                [3, 480, 112, True, "HS", 1],
+                [3, 672, 112, True, "HS", 1],
+                [5, 672, 160, True, "HS", 2],
+                [5, 960, 160, True, "HS", 1],
+                [5, 960, 160, True, "HS", 1],
             ]
-        elif mode == 'small':
+        elif mode == "small":
             mobile_setting = [
-                [3, 16,  16,  True,  'RE', 2],
-                [3, 72,  24,  False, 'RE', 2],
-                [3, 88,  24,  False, 'RE', 1],
-                [5, 96,  40,  True,  'HS', 2],
-                [5, 240, 40,  True,  'HS', 1],
-                [5, 240, 40,  True,  'HS', 1],
-                [5, 120, 48,  True,  'HS', 1],
-                [5, 144, 48,  True,  'HS', 1],
-                [5, 288, 96,  True,  'HS', 2],
-                [5, 576, 96,  True,  'HS', 1],
-                [5, 576, 96,  True,  'HS', 1],
+                [3, 16, 16, True, "RE", 2],
+                [3, 72, 24, False, "RE", 2],
+                [3, 88, 24, False, "RE", 1],
+                [5, 96, 40, True, "HS", 2],
+                [5, 240, 40, True, "HS", 1],
+                [5, 240, 40, True, "HS", 1],
+                [5, 120, 48, True, "HS", 1],
+                [5, 144, 48, True, "HS", 1],
+                [5, 288, 96, True, "HS", 2],
+                [5, 576, 96, True, "HS", 1],
+                [5, 576, 96, True, "HS", 1],
             ]
         else:
             raise NotImplementedError
 
         # building first layer
-        last_channel = _make_divisible(
-            last_channel * scale, round_nearest) if scale > 1.0 else last_channel
+        last_channel = (
+            _make_divisible(last_channel * scale, round_nearest)
+            if scale > 1.0
+            else last_channel
+        )
         self.features = [conv_bn(3, input_channel, 2, activation=Hswish)]
         self.classifier = []
 
@@ -207,22 +212,27 @@ class MobileNetV3(nn.Module):
         for k, exp, c, se, nl, s in mobile_setting:
             output_channel = _make_divisible(c * scale, round_nearest)
             exp_channel = _make_divisible(exp * scale, round_nearest)
-            self.features.append(InvertedResidual(
-                input_channel, output_channel, k, s, exp_channel, se, nl))
+            self.features.append(
+                InvertedResidual(
+                    input_channel, output_channel, k, s, exp_channel, se, nl
+                )
+            )
             input_channel = output_channel
 
         # building last several layers
-        if mode == 'large':
+        if mode == "large":
             last_conv = _make_divisible(960 * scale, round_nearest)
-            self.features.append(conv_1x1_bn(
-                input_channel, last_conv, activation=Hswish))
+            self.features.append(
+                conv_1x1_bn(input_channel, last_conv, activation=Hswish)
+            )
             self.features.append(nn.AdaptiveAvgPool2d(1))
             self.features.append(nn.Conv2d(last_conv, last_channel, 1, 1, 0))
             self.features.append(Hswish(inplace=True))
-        elif mode == 'small':
+        elif mode == "small":
             last_conv = _make_divisible(576 * scale, round_nearest)
-            self.features.append(conv_1x1_bn(
-                input_channel, last_conv, activation=Hswish))
+            self.features.append(
+                conv_1x1_bn(input_channel, last_conv, activation=Hswish)
+            )
             self.features.append(nn.AdaptiveAvgPool2d(1))
             self.features.append(nn.Conv2d(last_conv, last_channel, 1, 1, 0))
             self.features.append(Hswish(inplace=True))
@@ -248,10 +258,12 @@ class MobileNetV3(nn.Module):
     def init_params(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out')
+                nn.init.kaiming_normal_(m.weight, mode="fan_out")
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-            elif isinstance(m, link.nn.SyncBatchNorm2d) or isinstance(m, nn.BatchNorm2d):
+            elif isinstance(m, link.nn.SyncBatchNorm2d) or isinstance(
+                m, nn.BatchNorm2d
+            ):
                 if m.weight is not None:
                     nn.init.constant_(m.weight, 1)
                 if m.bias is not None:
